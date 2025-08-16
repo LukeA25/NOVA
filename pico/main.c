@@ -217,10 +217,11 @@ void stepper_task(void *pv) {
             // Advance to the next half-step
             stepper_p->phase = (stepper_p->phase + (stepper_p->dir > 0 ? 1 : 3)) & 3;
             stepper_write(&h, FULLSTEP4[stepper_p->phase]);
+
+            period_ticks = pdMS_TO_TICKS(stepper_p->step_delay_us / 1000);
+            if (period_ticks == 0) period_ticks = 1;
         }
 
-        period_ticks = pdMS_TO_TICKS(stepper_p->step_delay_us / 1000);
-        if (period_ticks == 0) period_ticks = 1;
         vTaskDelayUntil(&next_wake, period_ticks);
     }
 }
