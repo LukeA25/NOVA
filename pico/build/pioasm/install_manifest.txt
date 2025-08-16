@@ -1,5 +1,0 @@
-/Users/la25/NOVA/pico/build/pioasm-install/pioasm/pioasm
-/Users/la25/NOVA/pico/build/pioasm-install/pioasm/pioasmTargets.cmake
-/Users/la25/NOVA/pico/build/pioasm-install/pioasm/pioasmTargets-release.cmake
-/Users/la25/NOVA/pico/build/pioasm-install/pioasm/pioasmConfig.cmake
-/Users/la25/NOVA/pico/build/pioasm-install/pioasm/pioasmConfigVersion.cmake
