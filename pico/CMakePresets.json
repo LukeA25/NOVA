@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "picow",
+      "displayName": "Pico W Build",
+      "description": "Build using Pico SDK and ARM GCC",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "PICO_SDK_PATH": "${sourceDir}/pico-sdk",
+        "PICO_TOOLCHAIN_PATH": "/Applications/ArmGNUToolchain/14.3.rel1/arm-none-eabi",
+        "PICO_BOARD": "pico_w"
+      }
+    }
+  ]
+}

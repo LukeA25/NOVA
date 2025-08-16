@@ -1,0 +1,14 @@
+# Target labels
+ picotoolBuild
+# Source files and their labels
+/Users/la25/NOVA/pico/build/CMakeFiles/picotoolBuild
+/Users/la25/NOVA/pico/build/CMakeFiles/picotoolBuild.rule
+/Users/la25/NOVA/pico/build/CMakeFiles/picotoolBuild-complete.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-build.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-configure.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-download.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-install.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-mkdir.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-patch.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-test.rule
+/Users/la25/NOVA/pico/build/picotool/src/picotoolBuild-stamp/picotoolBuild-update.rule
