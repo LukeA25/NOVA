@@ -1,0 +1,20 @@
+# Ignore all build folders in subdirectories
+**/build/
+**/CMakeFiles/
+**/cmake_install.cmake
+**/CMakeCache.txt
+**/Makefile
+
+# Ignore generated binaries and maps
+**/*.elf
+**/*.bin
+**/*.hex
+**/*.map
+**/*.uf2
+
+# Ignore compilation tooling
+**/compile_commands.json
+.cache/
+
+# macOS system files
+.DS_Store
