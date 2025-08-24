@@ -5,6 +5,7 @@
 #include <queue>
 #include <thread>
 #include <iostream>
+#include <alsa/asoundlib.h>
 
 using namespace std::chrono_literals;
 
@@ -31,7 +32,7 @@ void push(Event e) {
     g_cv.notify_one();
 }
 
-/* ---------- PRODUCERS -------[48;52;171;2080;3420t--- */
+/* ---------- PRODUCERS ---------- */
 
 // 30s idle timer (fires only while in IDLE; we just let the state machine ignore it otherwise)
 void idle_timer() {
@@ -87,13 +88,17 @@ int main() {
 
     while (!g_quit.load()) {
         Event ev;
-        { // wait for next event
+        {
             std::unique_lock<std::mutex> lk(g_m);
             g_cv.wait(lk, []{ return !g_q.empty(); });
             ev = g_q.front(); g_q.pop();
         }
 
         switch (state) {
+            case State::CHARGING:
+                
+                break;
+
             case State::IDLE:
                 if (ev.id == Ev::WakeWord) {
                     state = State::LISTENING;
