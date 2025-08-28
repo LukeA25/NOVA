@@ -5,6 +5,7 @@
 #include <queue>
 #include <thread>
 #include <iostream>
+#include "capture.hpp"
 #include <alsa/asoundlib.h>
 
 using namespace std::chrono_literals;
@@ -44,15 +45,63 @@ void scan_timer() {
     while (!g_quit.load()) { std::this_thread::sleep_for(5min); push({Ev::ScanTick}); }
 }
 
+// Estimate direction of voice input
+float estimate_direction(const int32_t* buf, size_t frames, float Fs, float mic_spacing_m,
+                        float* out_deg)
+{
+    std::vector<float> L(frames), R(frames);
+    for (size_t i = 0; i < frames; ++i) {
+        L[i] = buf[2*i + 0] * (1.0f / 8388608.0f);
+        R[i] = buf[2*i + 1] * (1.0f / 8388608.0f);
+    }
+
+    // 2) FFT(L), FFT(R)  -> use any FFT lib (KissFFT, FFTW)
+	std::vector<std::complex<float>> LF, RF;
+	fft(L, LF); fft(R, RF);
+
+    // 3) GCC-PHAT
+    for (k) G[k] = (LF[k]*conj(RF[k])) / (abs(LF[k]*conj(RF[k])) + 1e-12);
+
+    // 4) IFFT(G) -> c[lag]
+    ifft(G, c);
+
+    int maxLag = (int)std::floor((mic_spacing_m / 343.0f) * Fs);
+    int bestLag = 0; float bestVal = -1e9f;
+    for (int lag = -maxLag; lag <= maxLag; ++lag) {
+        float v = c_limited[lag]; // from IFFT result, shifted to [-N/2, +N/2]
+        if (v > bestVal) { bestVal = v; bestLag = lag; }
+    }
+
+    // 6) angle
+    float tau = bestLag / Fs;
+    float s = (343.0f * tau) / mic_spacing_m;
+    if (s > 1.f) s = 1.f; else if (s < -1.f) s = -1.f;
+    *out_deg = std::asin(s) * 180.0f / float(M_PI);
+}
+
 // Wake‑word detector (stub that “hears” every 15s)
 void wake_word_thread() {
+	AlsaCapture cap("hw:1,0", 16000, 2, SND_PCM_FORMAT_S32_LE, 256);
+
+    std::vector<int32_t> buf;
     while (!g_quit.load()) {
-        std::this_thread::sleep_for(15s);
-        push({Ev::WakeWord});
+        snd_pcm_sframes_t got = cap.read(buf);
+        if (got <= 0) continue;
+
+        // crude level detector
+        int64_t sumAbs = 0;
+        for (snd_pcm_sframes_t i = 0; i < got; ++i) {
+            sumAbs += std::llabs((long long)buf[2*i] >> 8);
+        }
+
+        std::cout << "[wake] level=" << sumAbs << "\n";
+
+        if (sumAbs > 5e6) {
+            push({Ev::WakeWord});
+        }
     }
 }
 
-// TTS (speaking) stub: when asked to speak, it posts TtsStarted then, 3s later, TtsFinished.
 void start_tts_async(const std::string& text) {
     std::thread([text]{
         push({Ev::TtsStarted});

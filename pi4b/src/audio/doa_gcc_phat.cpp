@@ -1,29 +1,36 @@
-#include <cstdint>
+// src/audio/doa_gcc_phat.cpp
+//
+// Implementation of GCC-PHAT direction of arrival (DoA) estimation
+// for NOVA project audio module.
+//
+// Author: Luke Anderson
+// License: MIT
+
+#include "nova/audio/doa_gcc_phat.hpp"
+
 #include <vector>
 #include <cmath>
 #include <algorithm>
 #include "kiss_fft.h"
 
+namespace nova::audio {
+
 static inline size_t next_pow2(size_t n) {
-    size_t p = 1; while (p < n) p <<= 1; return p;
+    size_t p = 1;
+    while (p < n) p <<= 1;
+    return p;
 }
 
 static inline float hann(size_t i, size_t N) {
-    return 0.5f - 0.5f * std::cos(2.0f * float(M_PI) * float(i) / float(N - 1));
+    // Hann window to reduce spectral leakage
+    constexpr float kPi = 3.14159265358979323846f;
+    return 0.5f - 0.5f * std::cos(2.0f * kPi * float(i) / float(N - 1));
 }
 
-/**
- * GCC-PHAT DoA (2-mic) on interleaved S32_LE audio (L,R,L,R,...).
- *
- * @param buf            interleaved buffer of frames
- * @param frames         number of stereo frames in buf
- * @param Fs             sample rate (Hz)
- * @param mic_spacing_m  distance between mics (meters)
- * @param out_deg        (out) estimated angle in degrees, left negative / right positive
- * @return               simple confidence (peak value of the PHAT xcorr, 0..1-ish)
- */
+// ------------------ FUNCTION IMPLEMENTATION ------------------
+
 float estimate_direction(const int32_t* buf,
-                         size_t frames,
+                         std::size_t frames,
                          float Fs,
                          float mic_spacing_m,
                          float* out_deg)
@@ -113,3 +120,5 @@ float estimate_direction(const int32_t* buf,
 
     return std::max(0.0f, std::min(bestVal, 1.0f));
 }
+
+} // namespace nova::audio
