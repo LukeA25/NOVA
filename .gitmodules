@@ -1,3 +1,9 @@
 [submodule "pi4b/external/kissfft"]
 	path = pi4b/external/kissfft
 	url = https://github.com/mborgerding/kissfft
+[submodule "pico/external/FreeRTOS-Kernel"]
+	path = pico/external/FreeRTOS-Kernel
+	url = https://github.com/FreeRTOS/FreeRTOS-Kernel
+[submodule "pico/external/pico-sdk"]
+	path = pico/external/pico-sdk
+	url = https://github.com/raspberrypi/pico-sdk.git
