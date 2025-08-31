@@ -5,8 +5,12 @@
 #include <queue>
 #include <thread>
 #include <iostream>
-#include "capture.hpp"
+#include "nova/audio/AlsaCapture.hpp"
+#include "nova/audio/doa_gcc_phat.hpp"
+
+#ifndef __APPLE__
 #include <alsa/asoundlib.h>
+#endif
 
 using namespace std::chrono_literals;
 
@@ -45,58 +49,45 @@ void scan_timer() {
     while (!g_quit.load()) { std::this_thread::sleep_for(5min); push({Ev::ScanTick}); }
 }
 
-// Estimate direction of voice input
-float estimate_direction(const int32_t* buf, size_t frames, float Fs, float mic_spacing_m,
-                        float* out_deg)
-{
-    std::vector<float> L(frames), R(frames);
-    for (size_t i = 0; i < frames; ++i) {
-        L[i] = buf[2*i + 0] * (1.0f / 8388608.0f);
-        R[i] = buf[2*i + 1] * (1.0f / 8388608.0f);
-    }
-
-    // 2) FFT(L), FFT(R)  -> use any FFT lib (KissFFT, FFTW)
-	std::vector<std::complex<float>> LF, RF;
-	fft(L, LF); fft(R, RF);
-
-    // 3) GCC-PHAT
-    for (k) G[k] = (LF[k]*conj(RF[k])) / (abs(LF[k]*conj(RF[k])) + 1e-12);
-
-    // 4) IFFT(G) -> c[lag]
-    ifft(G, c);
-
-    int maxLag = (int)std::floor((mic_spacing_m / 343.0f) * Fs);
-    int bestLag = 0; float bestVal = -1e9f;
-    for (int lag = -maxLag; lag <= maxLag; ++lag) {
-        float v = c_limited[lag]; // from IFFT result, shifted to [-N/2, +N/2]
-        if (v > bestVal) { bestVal = v; bestLag = lag; }
-    }
-
-    // 6) angle
-    float tau = bestLag / Fs;
-    float s = (343.0f * tau) / mic_spacing_m;
-    if (s > 1.f) s = 1.f; else if (s < -1.f) s = -1.f;
-    *out_deg = std::asin(s) * 180.0f / float(M_PI);
-}
-
 // Wake‑word detector (stub that “hears” every 15s)
 void wake_word_thread() {
-	AlsaCapture cap("hw:1,0", 16000, 2, SND_PCM_FORMAT_S32_LE, 256);
+    // Adjust device string to your card if needed (check with `arecord -l`)
+    AlsaCapture cap("hw:1,0", 16000, 2, SND_PCM_FORMAT_S32_LE, 256);
+
+    constexpr float Fs = 16000.0f;
+    constexpr float MIC_SPACING_M = 0.189f; // your 18.9 cm
+    const int LEVEL_SHIFT = 8;              // downshift to keep sums sane
+    const int64_t LEVEL_THRESH = 5e6;       // crude energy gate
 
     std::vector<int32_t> buf;
+    uint64_t last_print_ms = 0;
+
     while (!g_quit.load()) {
-        snd_pcm_sframes_t got = cap.read(buf);
+        snd_pcm_sframes_t got = cap.read(buf);  // got = frames read
         if (got <= 0) continue;
 
-        // crude level detector
+        // crude level (mono sum of abs(left))
         int64_t sumAbs = 0;
         for (snd_pcm_sframes_t i = 0; i < got; ++i) {
-            sumAbs += std::llabs((long long)buf[2*i] >> 8);
+            sumAbs += std::llabs((long long)buf[2*i + 0] >> LEVEL_SHIFT);
         }
 
-        std::cout << "[wake] level=" << sumAbs << "\n";
+        // Estimate direction once per buffer (or throttle prints)
+        float deg = 0.0f;
+        float conf = nova::audio::estimate_direction(buf.data(), (size_t)got, Fs, MIC_SPACING_M, &deg);
 
-        if (sumAbs > 5e6) {
+        // Throttle console spam to ~10 Hz
+        uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (now_ms - last_print_ms > 100) {
+            std::cout << "[mic] level=" << sumAbs
+                      << "  doa_deg=" << deg
+                      << "  conf=" << conf << "\n";
+            last_print_ms = now_ms;
+        }
+
+        // Super-simple “wake” gate: loud enough AND somewhat confident
+        if (sumAbs > LEVEL_THRESH && conf > 0.1f) {
             push({Ev::WakeWord});
         }
     }
