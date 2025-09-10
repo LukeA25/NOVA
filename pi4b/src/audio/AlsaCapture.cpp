@@ -1,5 +1,6 @@
-#include "capture.hpp"
+#include "nova/audio/AlsaCapture.hpp"
 #include <cstdio>
+#include <stdexcept>
 
 static void fail(const char* msg, int err) {
     std::fprintf(stderr, "%s: %s\n", msg, snd_strerror(err));

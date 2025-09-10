@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pi4b CXX)
+project(pi4b C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -30,8 +30,8 @@ if(NOT APPLE)
 endif()
 
 # Example/demo
-add_executable(doa_demo examples/doa_demo.cpp)
-target_link_libraries(doa_demo PRIVATE nova_audio)
+# add_executable(doa_demo examples/doa_demo.cpp)
+# target_link_libraries(doa_demo PRIVATE nova_audio)
 
 # App
 add_executable(app apps/main.cpp)
