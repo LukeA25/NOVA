@@ -169,76 +169,6 @@ void uart_thread() {
     ::close(fd);
 }
 
-void wifi_tx_thread() {
-    int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) { perror("socket"); return; }
-
-    timeval tv{.tv_sec = 0, .tv_usec = 20000};
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    sockaddr_in dst{};
-    dst.sin_family = AF_INET;
-    dst.sin_port   = htons(cfg::kUdpTxPort);
-    dst.sin_addr.s_addr = inet_addr(cfg::kUdpTargetIp);
-
-    while (!g_quit.load()) {
-        float deg  = g_doa_deg.load(std::memory_order_relaxed);
-        float conf = g_doa_conf.load(std::memory_order_relaxed);
-
-        char msg[128];
-        int n = std::snprintf(msg, sizeof(msg),
-                              "{\"type\":\"doa\",\"deg\":%.1f,\"conf\":%.3f}\n",
-                              deg, conf);
-        if (n > 0) {
-            (void)::sendto(sock, msg, (size_t)n, 0,
-                           reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    }
-    ::close(sock);
-}
-
-void wifi_rx_thread() {
-    int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) { perror("socket"); return; }
-
-    // allow quick rebinding after restarts
-    int yes = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_port        = htons(cfg::kUdpRxPort);
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        perror("bind");
-        ::close(sock);
-        return;
-    }
-
-    // optional recv timeout so we can exit promptly
-    timeval tv{.tv_sec = 0, .tv_usec = 200000}; // 200 ms
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    char buf[512];
-    while (!g_quit.load()) {
-        ssize_t n = ::recv(sock, buf, sizeof(buf)-1, 0);
-        if (n <= 0) continue;
-        buf[n] = 0;
-
-        // ultra-tiny parser (enough for our two messages)
-        if (std::strstr(buf, "\"type\":\"charge\"")) {
-            if (std::strstr(buf, "\"state\":\"start\"")) {
-                push({Ev::ChargeStarted});
-            } else if (std::strstr(buf, "\"state\":\"stop\"")) {
-                push({Ev::ChargeStopped});
-            }
-        }
-    }
-    ::close(sock);
-}
-
 // ------------------- Consumer (state machine) -------------------
 
 int main() {
@@ -248,8 +178,6 @@ int main() {
     std::thread(scan_timer).detach();
     std::thread(audio_doa_thread).detach();
     std::thread(uart_thread).detach();
-	std::thread(wifi_tx_thread).detach();
-	std::thread(wifi_rx_thread).detach();
 
     State state = State::IDLE;
 
