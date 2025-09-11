@@ -1,5 +1,5 @@
-[submodule "pi4b/external/kissfft"]
-	path = pi4b/external/kissfft
+[submodule "pi3b/external/kissfft"]
+	path = pi3b/external/kissfft
 	url = https://github.com/mborgerding/kissfft
 [submodule "pico/external/FreeRTOS-Kernel"]
 	path = pico/external/FreeRTOS-Kernel
