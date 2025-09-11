@@ -29,8 +29,8 @@ using namespace std::chrono_literals;
 // ----------------------- Config -----------------------
 namespace cfg {
     // Audio / DoA
-    inline const char* kAlsaDevice   = "hw:1,0"; // check with `arecord -l`
-    constexpr unsigned kRate         = 16000;
+    inline const char* kAlsaDevice   = "hw:2,0"; // check with `arecord -l`
+    constexpr unsigned kRate         = 48000;
     constexpr unsigned kChannels     = 2;        // L/R (two mics time-division on I2S)
     constexpr snd_pcm_format_t kFmt  = SND_PCM_FORMAT_S32_LE;
     constexpr snd_pcm_uframes_t kPeriodFrames = 256;
