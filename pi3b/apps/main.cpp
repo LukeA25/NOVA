@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <mutex>
 #include <queue>
-#include <string>
+#include <cstring>
 #include <thread>
 #include <iostream>
 
@@ -45,7 +45,7 @@ namespace cfg {
 
 	// Wi-Fi / UDP
     inline const char* kUdpTargetIp = "192.168.1.42"; // <-- set to Zero 2 W IP
-    constexpr uint16_t kUdpPort     = 5005; // Outgoing telemetry
+    constexpr uint16_t kUdpTxPort     = 5005; // Outgoing telemetry
     constexpr uint16_t kUdpRxPort   = 5006; // Incoming control
 
     // Timers
@@ -202,7 +202,7 @@ void wifi_rx_thread() {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return; }
 
-    // allow quick rebinding after restarts
+    // Allow quick rebinding after restarts
     int yes = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
@@ -217,7 +217,7 @@ void wifi_rx_thread() {
         return;
     }
 
-    // optional recv timeout so we can exit promptly
+    // Timeout so we can exit promptly
     timeval tv{.tv_sec = 0, .tv_usec = 200000}; // 200 ms
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
@@ -227,7 +227,6 @@ void wifi_rx_thread() {
         if (n <= 0) continue;
         buf[n] = 0;
 
-        // ultra-tiny parser (enough for our two messages)
         if (std::strstr(buf, "\"type\":\"charge\"")) {
             if (std::strstr(buf, "\"state\":\"start\"")) {
                 push({Ev::ChargeStarted});
