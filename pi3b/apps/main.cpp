@@ -18,7 +18,7 @@
 #include <arpa/inet.h>
 
 #ifndef __APPLE__
-  #include <webrtc_vad/webrtc_vad.h>
+  #include "webrtc_vad.h"
   #include <alsa/asoundlib.h>
 #endif
 
