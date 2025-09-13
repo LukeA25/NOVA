@@ -107,12 +107,22 @@ void audio_doa_thread() {
         snd_pcm_sframes_t got = cap.read(buf);
         if (got <= 0) continue;
 
+        // Apply gain on stereo int32 samples
+        float gain = 8.0f;  // ~+18 dB
+        for (snd_pcm_sframes_t i = 0; i < got * 2; i++) {
+            int64_t v = static_cast<int64_t>(buf[i]) * gain;
+            buf[i] = static_cast<int32_t>(std::clamp(
+                v, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)
+            ));
+        }
+
         // Convert to mono int16 for VAD
         std::vector<int16_t> mono(got);
         for (snd_pcm_sframes_t i = 0; i < got; i++) {
             int64_t l = buf[2*i];
             int64_t r = buf[2*i+1];
-           [48;52;171;2080;3420t mono[i] = static_cast<int16_t>((l + r) >> 17);
+            // Average + shift to reduce from 32-bit to 16-bit
+            mono[i] = static_cast<int16_t>((l + r) >> 17);
         }
 
         bool speech_detected = false;
