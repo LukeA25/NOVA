@@ -39,10 +39,12 @@ target_include_directories(nova_audio
   PUBLIC ${CMAKE_SOURCE_DIR}/include
 )
 target_link_libraries(nova_audio
-  PRIVATE kissfft
-  PRIVATE ALSA::ALSA
-  PRIVATE SndFile::sndfile
-  PRIVATE CURL::libcurl
+  PRIVATE 
+    kissfft
+    ALSA::ALSA
+    SndFile::sndfile
+    CURL::libcurl
+    webrtcvad
 )
 
 # Example/demo
