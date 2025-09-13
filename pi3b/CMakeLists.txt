@@ -38,8 +38,12 @@ target_include_directories(nova_audio
   PUBLIC ${CMAKE_SOURCE_DIR}/include
   PRIVATE ${SNDFILE_INCLUDE_DIRS}
 )
-
+target_include_directories(webrtcvad PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include
+)
 target_link_libraries(nova_audio
+  PUBLIC
+    webrtcvad
   PRIVATE 
     kissfft
     ALSA::ALSA

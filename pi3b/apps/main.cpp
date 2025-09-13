@@ -8,6 +8,7 @@
 #include <cstring>
 #include <thread>
 #include <iostream>
+#include <algorithm>
 
 #include <termios.h>
 #include <unistd.h>
@@ -16,6 +17,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sndfile.h>
 
 #ifndef __APPLE__
   #include "webrtc_vad.h"
@@ -101,7 +103,7 @@ void audio_doa_thread() {
     const int frame_size = 480; // 10 ms @ 48kHz
 
     // Init server client
-    ServerClient client("https://your-render-server.onrender.com/asr");
+    ServerClient client("https://nova-server-iy13.onrender.com");
 
     while (!g_quit.load()) {
         snd_pcm_sframes_t got = cap.read(buf);
