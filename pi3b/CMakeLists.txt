@@ -14,6 +14,21 @@ find_package(
 )
 find_library(WEBRTC_VAD_LIB webrtcvad REQUIRED)
 
+# WebRTC VAD (vendored from py-webrtcvad cbits/)
+add_library(webrtcvad STATIC
+  external/webrtcvad/webrtc/common_audio/vad/vad_core.c
+  external/webrtcvad/webrtc/common_audio/vad/vad_filterbank.c
+  external/webrtcvad/webrtc/common_audio/vad/vad_gmm.c
+  external/webrtcvad/webrtc/common_audio/vad/vad_sp.c
+  external/webrtcvad/webrtc/common_audio/vad/webrtc_vad.c
+  external/webrtcvad/pywebrtcvad.c
+)
+
+target_include_directories(webrtcvad PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad
+  ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc
+)
+
 # Library: nova_audio
 add_library(nova_audio
   src/audio/doa_gcc_phat.cpp
