@@ -18,11 +18,13 @@
 #include <arpa/inet.h>
 
 #ifndef __APPLE__
+  #include <webrtc_vad/webrtc_vad.h>
   #include <alsa/asoundlib.h>
 #endif
 
 #include "nova/audio/AlsaCapture.hpp"
 #include "nova/audio/doa_gcc_phat.hpp"
+#include "nova/ServerClient.hpp"
 
 using namespace std::chrono_literals;
 
@@ -85,48 +87,72 @@ void scan_timer() {
     while (!g_quit.load()) { std::this_thread::sleep_for(cfg::kScanTickPeriod); push({Ev::ScanTick}); }
 }
 
+
 void audio_doa_thread() {
 #ifndef __APPLE__
     AlsaCapture cap(cfg::kAlsaDevice, cfg::kRate, cfg::kChannels, cfg::kFmt, cfg::kPeriodFrames);
-
     std::vector<int32_t> buf;
-    uint64_t last_print_ms = 0;
+
+    // Setup VAD
+    VadInst* vad = WebRtcVad_Create();
+    WebRtcVad_Init(vad);
+    WebRtcVad_set_mode(vad, 3);
+
+    const int frame_size = 480; // 10 ms @ 48kHz
+
+    // Init server client
+    ServerClient client("https://your-render-server.onrender.com/asr");
 
     while (!g_quit.load()) {
-        snd_pcm_sframes_t got = cap.read(buf); // frames read
+        snd_pcm_sframes_t got = cap.read(buf);
         if (got <= 0) continue;
 
-        // Very crude level gate on Left channel
-        int64_t sumAbs = 0;
-        for (snd_pcm_sframes_t i = 0; i < got; ++i) {
-            sumAbs += std::llabs((long long)buf[2*i + 0] >> cfg::kLevelShift);
+        // Convert to mono int16 for VAD
+        std::vector<int16_t> mono(got);
+        for (snd_pcm_sframes_t i = 0; i < got; i++) {
+            int64_t l = buf[2*i];
+            int64_t r = buf[2*i+1];
+           [48;52;171;2080;3420t mono[i] = static_cast<int16_t>((l + r) >> 17);
         }
 
-        float deg = 0.0f;
-        float conf = nova::audio::estimate_direction(
-            buf.data(), (size_t)got, float(cfg::kRate), cfg::kMicSpacingM, &deg);
-
-        g_doa_deg.store(deg,  std::memory_order_relaxed);
-        g_doa_conf.store(conf, std::memory_order_relaxed);
-
-        // Debug print ~10 Hz
-        uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (now_ms - last_print_ms > 100) {
-            std::cout << "[mic] level=" << sumAbs
-                      << " doa=" << deg
-                      << " conf=" << conf << "\n";
-            last_print_ms = now_ms;
+        bool speech_detected = false;
+        for (size_t i = 0; i + frame_size <= mono.size(); i += frame_size) {
+            int vad_res = WebRtcVad_Process(vad, cfg::kRate, mono.data() + i, frame_size);
+            if (vad_res == 1) {
+                speech_detected = true;
+                break;
+            }
         }
 
-        // Temporary wake condition: loud enough + some confidence
-        if (sumAbs > cfg::kLevelThresh && conf > cfg::kConfThresh) {
-            push({Ev::WakeWord});
+        if (speech_detected) {
+            // --- Save buffer to WAV ---
+            const char* path = "/tmp/utterance.wav";
+
+            SF_INFO sfinfo{};
+            sfinfo.channels = 2;                // stereo
+            sfinfo.samplerate = cfg::kRate;     // 48000
+            sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_32;
+
+            SNDFILE* outfile = sf_open(path, SFM_WRITE, &sfinfo);
+            if (!outfile) {
+                std::cerr << "Failed to open WAV file for writing\n";
+                continue;
+            }
+
+            sf_write_int(buf.data(), buf.size(), outfile);
+            sf_close(outfile);
+
+            // --- Upload to server ---
+            std::string response;
+            if (client.upload_wav(path, response)) {
+                std::cout << "[upload] Server response: " << response << "\n";
+            } else {
+                std::cerr << "[upload] Failed to send file\n";
+            }
         }
     }
-#else
-    // On macOS dev boxes (no ALSA), idle and do nothing
-    while (!g_quit.load()) std::this_thread::sleep_for(200ms);
+
+    WebRtcVad_Free(vad);
 #endif
 }
 
