@@ -151,7 +151,7 @@ void audio_doa_thread() {
                 continue;
             }
 
-            sf_write_int(buf.data(), buf.size(), outfile);
+            sf_write_int(outfile, buf.data(), buf.size());
             sf_close(outfile);
 
             // --- Upload to server ---
