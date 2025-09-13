@@ -13,18 +13,17 @@ find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SNDFILE REQUIRED sndfile)
 
-# WebRTC VAD (vendored from py-webrtcvad cbits/)
-add_library(webrtcvad STATIC
-  external/webrtcvad/webrtc/common_audio/vad/vad_core.c
-  external/webrtcvad/webrtc/common_audio/vad/vad_filterbank.c
-  external/webrtcvad/webrtc/common_audio/vad/vad_gmm.c
-  external/webrtcvad/webrtc/common_audio/vad/vad_sp.c
-  external/webrtcvad/webrtc/common_audio/vad/webrtc_vad.c
+# Add webrtcvad static library from all cbits sources
+file(GLOB_RECURSE WEBRTCVAD_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/signal_processing/*.c
 )
 
+add_library(webrtcvad STATIC ${WEBRTCVAD_SOURCES})
+
 target_include_directories(webrtcvad PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad
-  ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/signal_processing/include
 )
 
 # Library: nova_audio
@@ -42,9 +41,8 @@ target_include_directories(webrtcvad PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include
 )
 target_link_libraries(nova_audio
-  PUBLIC
-    webrtcvad
   PRIVATE 
+    webrtcvad
     kissfft
     ALSA::ALSA
     CURL::libcurl
