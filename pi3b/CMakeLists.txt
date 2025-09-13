@@ -8,8 +8,10 @@ add_library(kissfft STATIC external/kissfft/kiss_fft.c)
 target_include_directories(kissfft PUBLIC external/kissfft)
 
 find_package(ALSA REQUIRED)
-find_package(SndFile REQUIRED)
 find_package(CURL REQUIRED)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SNDFILE REQUIRED sndfile)
 
 # WebRTC VAD (vendored from py-webrtcvad cbits/)
 add_library(webrtcvad STATIC
@@ -18,7 +20,6 @@ add_library(webrtcvad STATIC
   external/webrtcvad/webrtc/common_audio/vad/vad_gmm.c
   external/webrtcvad/webrtc/common_audio/vad/vad_sp.c
   external/webrtcvad/webrtc/common_audio/vad/webrtc_vad.c
-  external/webrtcvad/pywebrtcvad.c
 )
 
 target_include_directories(webrtcvad PUBLIC
@@ -35,15 +36,16 @@ add_library(nova_audio
 
 target_include_directories(nova_audio
   PUBLIC ${CMAKE_SOURCE_DIR}/include
+  PRIVATE ${SNDFILE_INCLUDE_DIRS}
 )
 
 target_link_libraries(nova_audio
   PRIVATE 
     kissfft
     ALSA::ALSA
-    SndFile::sndfile
     CURL::libcurl
     webrtcvad
+    ${SNDFILE_LIBRARIES}
 )
 
 # App
