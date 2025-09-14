@@ -29,13 +29,14 @@ pkg_check_modules(SNDFILE REQUIRED sndfile)
 file(GLOB_RECURSE WEBRTCVAD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/*.c
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/signal_processing/*.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc_stubs.c
 )
 
 add_library(webrtcvad STATIC ${WEBRTCVAD_SOURCES})
 
 target_include_directories(webrtcvad PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/signal_processing/include
 )
 
 # -------------------------

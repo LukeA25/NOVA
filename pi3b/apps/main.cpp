@@ -89,82 +89,114 @@ void scan_timer() {
     while (!g_quit.load()) { std::this_thread::sleep_for(cfg::kScanTickPeriod); push({Ev::ScanTick}); }
 }
 
-
 void audio_doa_thread() {
 #ifndef __APPLE__
+  try {
+    std::cout << "[audio] thread starting...\n" << std::flush;
+
     AlsaCapture cap(cfg::kAlsaDevice, cfg::kRate, cfg::kChannels, cfg::kFmt, cfg::kPeriodFrames);
     std::vector<int32_t> buf;
 
-    // Setup VAD
+    // VAD init
     VadInst* vad = WebRtcVad_Create();
-    WebRtcVad_Init(vad);
-    WebRtcVad_set_mode(vad, 3);
+    if (!vad) throw std::runtime_error("WebRtcVad_Create failed");
+    if (WebRtcVad_Init(vad) != 0) throw std::runtime_error("WebRtcVad_Init failed");
+    if (WebRtcVad_set_mode(vad, 0) != 0) throw std::runtime_error("WebRtcVad_set_mode failed");
 
-    const int frame_size = 480; // 10 ms @ 48kHz
-
-    // Init server client
+    // Server client
     ServerClient client("https://nova-server-iy13.onrender.com");
 
+    const int frame_size = 480; // 10ms @ 48k
+    std::vector<int16_t> mono;  mono.reserve(480*10); // reuse buffer
+
+    uint64_t last_log_ms = 0;
+
     while (!g_quit.load()) {
-        snd_pcm_sframes_t got = cap.read(buf);
-        if (got <= 0) continue;
+      snd_pcm_sframes_t got = cap.read(buf);
+      if (got <= 0) continue;
 
-        // Apply gain on stereo int32 samples
-        float gain = 8.0f;  // ~+18 dB
-        for (snd_pcm_sframes_t i = 0; i < got * 2; i++) {
-            int64_t v = static_cast<int64_t>(buf[i]) * gain;
-            buf[i] = static_cast<int32_t>(std::clamp(
-                v, static_cast<int64_t>(INT32_MIN), static_cast<int64_t>(INT32_MAX)
-            ));
+      // Simple level meter on left
+      int64_t level = 0;
+      for (snd_pcm_sframes_t i = 0; i < got; ++i) {
+        level += std::llabs((long long)buf[2*i + 0] >> cfg::kLevelShift);
+      }
+
+      // Apply a bit of gain before down-convert (optional)
+      constexpr float kGain = 50.0f; // ~15.5 dB
+      for (size_t i = 0; i < buf.size(); ++i) {
+        int64_t v = (int64_t)(buf[i] * kGain);
+        if (v > INT32_MAX) v = INT32_MAX;
+        if (v < INT32_MIN) v = INT32_MIN;
+        buf[i] = (int32_t)v;
+      }
+
+      // S32 stereo -> S16 mono (average L/R). Shift 16 bits (not 17) to keep a hair more energy.
+      mono.resize(got);
+      for (snd_pcm_sframes_t i = 0; i < got; ++i) {
+        int64_t l = buf[2*i + 0];
+        int64_t r = buf[2*i + 1];
+        int64_t m = (l + r) >> 1;          // average in 32-bit
+        mono[i] = (int16_t)(m >> 14);      // convert to 16-bit
+      }
+
+      // Run VAD over 10ms chunks
+      bool speech_detected = false;
+      for (size_t i = 0; i + frame_size <= mono.size(); i += frame_size) {
+        int vad_res = WebRtcVad_Process(vad, cfg::kRate, mono.data() + i, frame_size);
+        if (vad_res < 0) {
+          std::cerr << "[vad] error from WebRtcVad_Process\n";
+          break;
         }
+        if (vad_res == 1) { speech_detected = true; break; }
+      }
 
-        // Convert to mono int16 for VAD
-        std::vector<int16_t> mono(got);
-        for (snd_pcm_sframes_t i = 0; i < got; i++) {
-            int64_t l = buf[2*i];
-            int64_t r = buf[2*i+1];
-            // Average + shift to reduce from 32-bit to 16-bit
-            mono[i] = static_cast<int16_t>((l + r) >> 17);
-        }
+      // Lightweight console log ~10 Hz so you see *something*
+      uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+      if (now_ms - last_log_ms > 100) {
+        std::cout << "[audio] lvl=" << level << " vad=" << (speech_detected?1:0) << "\n" << std::flush;
+        last_log_ms = now_ms;
+      }
 
-        bool speech_detected = false;
-        for (size_t i = 0; i + frame_size <= mono.size(); i += frame_size) {
-            int vad_res = WebRtcVad_Process(vad, cfg::kRate, mono.data() + i, frame_size);
-            if (vad_res == 1) {
-                speech_detected = true;
-                break;
-            }
-        }
+      if (!speech_detected) continue;
 
-        if (speech_detected) {
-            // --- Save buffer to WAV ---
-            const char* path = "/tmp/utterance.wav";
+      // Save raw buf (stereo S32) to WAV
+      const char* path = "/tmp/utterance.wav";
+      SF_INFO sfinfo{};
+      sfinfo.channels   = 2;
+      sfinfo.samplerate = cfg::kRate;
+      sfinfo.format     = SF_FORMAT_WAV | SF_FORMAT_PCM_32;
 
-            SF_INFO sfinfo{};
-            sfinfo.channels = 2;                // stereo
-            sfinfo.samplerate = cfg::kRate;     // 48000
-            sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_32;
+      if (SNDFILE* f = sf_open(path, SFM_WRITE, &sfinfo)) {
+        sf_write_int(f, buf.data(), (sf_count_t)buf.size());
+        sf_close(f);
+        std::cout << "[save] wrote " << (buf.size()/2) << " frames to " << path << "\n";
+      } else {
+        std::cerr << "[save] sf_open failed\n";
+        continue;
+      }
 
-            SNDFILE* outfile = sf_open(path, SFM_WRITE, &sfinfo);
-            if (!outfile) {
-                std::cerr << "Failed to open WAV file for writing\n";
-                continue;
-            }
+      // Upload to your server
+      std::string response;
+      if (client.upload_wav(path, response)) {
+        std::cout << "[upload] OK: " << response << "\n";
+      } else {
+        std::cerr << "[upload] FAILED\n";
+      }
 
-            sf_write_int(outfile, buf.data(), buf.size());
-            sf_close(outfile);
-
-            // --- Upload to server ---
-            std::string response;
-            if (client.upload_wav(path, response)) {
-                std::cout << "[upload] Server response: " << response << "\n";
-            } else {
-                std::cerr << "[upload] Failed to send file\n";
-            }
-        }
+      // Optionally push an app event
+      push({Ev::WakeWord});
     }
 
     WebRtcVad_Free(vad);
+    std::cout << "[audio] thread exiting...\n";
+  } catch (const std::exception& e) {
+    std::cerr << "[audio] fatal: " << e.what() << "\n";
+    // Don’t kill the whole process—just stop this thread
+    while (!g_quit.load()) std::this_thread::sleep_for(1s);
+  }
+#else
+  while (!g_quit.load()) std::this_thread::sleep_for(200ms);
 #endif
 }
 
