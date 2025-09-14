@@ -20,6 +20,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+A copy of license terms for the Wake Word Detection model under 'pi3b/models'
+is available at https://picovoice.ai/docs/terms-of-use/
+
 The VAD code under `pi3b/external/webrtcvad/webrtc` is from the WebRTC project, 
 and has the following license:
 
