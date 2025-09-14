@@ -20,7 +20,7 @@
 #include <sndfile.h>
 
 #ifndef __APPLE__
-  #include "webrtc_vad.h"
+  #include "webrtc/common_audio/vad/include/webrtc_vad.h"
   #include <alsa/asoundlib.h>
 #endif
 

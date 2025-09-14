@@ -45,7 +45,6 @@ target_link_libraries(nova_audio
     kissfft
     ALSA::ALSA
     CURL::libcurl
-    webrtcvad
     ${SNDFILE_LIBRARIES}
 )
 
