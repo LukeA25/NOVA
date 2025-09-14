@@ -36,8 +36,7 @@ add_library(webrtcvad STATIC ${WEBRTCVAD_SOURCES})
 
 target_include_directories(webrtcvad PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include
-)
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include)
 
 # -------------------------
 # nova_audio library
@@ -68,4 +67,5 @@ target_link_libraries(nova_audio
 # -------------------------
 
 add_executable(app apps/main.cpp)
+add_executable(recording_test tests/recording_test.cpp)
 target_link_libraries(app PRIVATE nova_audio)
