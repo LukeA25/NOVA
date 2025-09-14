@@ -59,7 +59,7 @@ target_link_libraries(nova_audio
         kissfft
         ALSA::ALSA
         CURL::libcurl
-        ${SNDFILE_LIBR[48;52;171;2080;3420tARIES}
+        ${SNDFILE_LIBRARIES}
 )
 
 # -------------------------
