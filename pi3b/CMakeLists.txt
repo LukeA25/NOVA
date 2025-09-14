@@ -22,6 +22,8 @@ find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SNDFILE REQUIRED sndfile)
 
+add_library(webrtcvad STATIC ${WEBRTCVAD_SOURCES})
+
 # -------------------------
 # WebRTC VAD (vendored)
 # -------------------------
@@ -32,11 +34,20 @@ file(GLOB_RECURSE WEBRTCVAD_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc_stubs.c
 )
 
-add_library(webrtcvad STATIC ${WEBRTCVAD_SOURCES})
-
 target_include_directories(webrtcvad PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad
     ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include)
+
+
+# -------------------------
+# Porcupine (vendored)
+# -------------------------
+
+add_library(porcupine STATIC IMPORTED)
+set_target_properties(porcupine PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/external/porcupine/lib/linux/x86_64/libpv_porcupine.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/external/porcupine/include"
+)
 
 # -------------------------
 # nova_audio library
@@ -45,6 +56,7 @@ target_include_directories(webrtcvad PUBLIC
 add_library(nova_audio
     src/audio/doa_gcc_phat.cpp
     src/audio/AlsaCapture.cpp
+    src/audio/PorcupineHandler.cpp
     src/ServerClient.cpp
 )
 
@@ -56,10 +68,12 @@ target_include_directories(nova_audio
 target_link_libraries(nova_audio
     PUBLIC
         webrtcvad
+    PRIVATE
         kissfft
         ALSA::ALSA
         CURL::libcurl
         ${SNDFILE_LIBRARIES}
+        porcupine
 )
 
 # -------------------------

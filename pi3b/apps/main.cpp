@@ -19,6 +19,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sndfile.h>
+#include <curl/curl.h>
 
 #ifndef __APPLE__
   #include "webrtc_vad.h"
@@ -27,6 +28,7 @@
 
 #include "nova/audio/AlsaCapture.hpp"
 #include "nova/audio/doa_gcc_phat.hpp"
+#include "nova/audio/PorcupineHandler.hpp"
 #include "nova/ServerClient.hpp"
 
 using namespace std::chrono_literals;
@@ -101,6 +103,56 @@ struct DcFilter {
     }
 };
 
+void save_clip(const std::vector<int16_t>& samples, const std::string& path) {
+    SF_INFO sfinfo{};
+    sfinfo.samplerate = 48000;
+    sfinfo.channels = 1;
+    sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
+
+    SNDFILE* sndfile = sf_open(path.c_str(), SFM_WRITE, &sfinfo);
+    if (!sndfile) {
+        std::cerr << "[save_clip] Failed to open file: " << sf_strerror(nullptr) << std::endl;
+        return;
+    }
+
+    sf_count_t written = sf_write_short(sndfile, samples.data(), samples.size());
+    if (written != static_cast<sf_count_t>(samples.size())) {
+        std::cerr << "[save_clip] Incomplete write: " << written << " of " << samples.size() << " samples\n";
+    }
+
+    sf_close(sndfile);
+    std::cout << "[save_clip] Saved " << path << " (" << samples.size() << " samples)\n";
+}
+
+void upload_clip(const std::vector<int16_t>& samples) {
+    const char* filename = "wake_clip.wav";
+    save_clip(samples, filename);  // First save it locally
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::cerr << "[upload_clip] Failed to init curl\n";
+        return;
+    }
+
+    curl_mime* form = curl_mime_init(curl);
+    curl_mimepart* part = curl_mime_addpart(form);
+    curl_mime_name(part, "file");
+    curl_mime_filedata(part, filename);
+
+    curl_easy_setopt(curl, CURLOPT_URL, "https://nova-server-iy13.onrender.com");
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, form);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        std::cerr << "[upload_clip] curl error: " << curl_easy_strerror(res) << std::endl;
+    } else {
+        std::cout << "[upload_clip] Upload successful\n";
+    }
+
+    curl_mime_free(form);
+    curl_easy_cleanup(curl);
+}
+
 // Minimal event bus / state machine
 enum class State { CHARGING, IDLE, LISTENING, SPEAKING };
 enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped };
@@ -111,8 +163,6 @@ std::condition_variable g_q_cv;
 std::queue<Event> g_q;
 
 std::atomic<bool>  g_quit{false};
-std::atomic<float> g_doa_deg{0.0f};   // latest DoA estimate (deg)
-std::atomic<float> g_doa_conf{0.0f};  // latest PHAT peak as crude “confidence”
 
 static void push(Event e) {
     std::lock_guard<std::mutex> lk(g_q_m);
@@ -133,25 +183,33 @@ void scan_timer() {
 }
 
 void audio_doa_thread() {
-	std::atomic<bool> running(true);
-	SpeechGate gate;
-	std::deque<int16_t> prebuffer;   // ~1 sec of audio
-	bool recording = false;
-	std::vector<int16_t> current_clip;
+    SpeechGate gate;
+    std::deque<int16_t> prebuffer;   // ~1 sec of audio
+    bool recording = false;
+    std::vector<int16_t> current_clip;
+
     try {
         std::cout << "[thread] audio_doa_thread started" << std::endl;
 
         // === ALSA device ===
-	AlsaCapture alsa(cfg::kAlsaDevice,
-                 cfg::kRate,
-                 cfg::kChannels,
-                 cfg::kFormat,
-                 cfg::kPeriodFrames);
+        AlsaCapture alsa(cfg::kAlsaDevice,
+                         cfg::kRate,
+                         cfg::kChannels,
+                         cfg::kFormat,
+                         cfg::kPeriodFrames);
 
         // === VAD ===
         VadInst* vad = WebRtcVad_Create();
         WebRtcVad_Init(vad);
-        WebRtcVad_set_mode(vad, 3); // 0=permissive, 3=restrictive
+        WebRtcVad_set_mode(vad, 3);
+
+        // === Porcupine init (assume already created globally) ===
+        extern pv_porcupine_t *porcupine;
+        static std::vector<int16_t> porcupine_buf; // accumulates 16kHz samples
+        PorcupineHandler porcupine(
+            "../external/porcupine/lib/common/porcupine_params.pv",  // model path
+            "../models/Hey-Nova_en_raspberry-pi_v3_0_0.ppn"          // your wakeword file
+        );
 
         // === Buffers ===
         std::vector<int32_t> buf(cfg::kPeriodFrames * cfg::kChannels);
@@ -162,9 +220,8 @@ void audio_doa_thread() {
         std::vector<int16_t> frame480;
         frame480.reserve(480);
 
-        while (running) {
-            // const size_t got = alsa.read(buf.data(), buf.size());
-	    const size_t got = alsa.read(buf);
+        while (!g_quit.load()) {
+            const size_t got = alsa.read(buf);
             if (got == 0) continue;
 
             // Stereo → mono + DC remove + gain
@@ -174,8 +231,8 @@ void audio_doa_thread() {
                 int32_t right = buf[2 * i + 1];
                 int32_t sample = (left + right) / 2;
 
-                int16_t shifted = static_cast<int16_t>(sample >> 14); // downshift
-                int16_t filtered = dc_filter.process(shifted);        // DC remove
+                int16_t shifted = static_cast<int16_t>(sample >> 14);
+                int16_t filtered = dc_filter.process(shifted);
                 int32_t amplified = static_cast<int32_t>(filtered * cfg::kGain);
                 mono[i] = std::clamp(amplified, -32768, 32767);
             }
@@ -195,57 +252,68 @@ void audio_doa_thread() {
                     float rms = std::sqrt(sum / 480.0f);
 
                     // --- VAD ---
-		    int vad_result = WebRtcVad_Process(vad, cfg::kRate, frame480.data(), frame480.size());
-		    bool speech_detected = gate.update(vad_result);
+                    int vad_result = WebRtcVad_Process(vad, cfg::kRate,
+                                                       frame480.data(), frame480.size());
+                    bool speech_detected = gate.update(vad_result);
 
-		    if (!recording && speech_detected) {
-        // dump prebuffer + current frame into candidate
-        std::vector<int16_t> candidate(prebuffer.begin(), prebuffer.end());
-        candidate.insert(candidate.end(), frame.begin(), frame.end());
+                    // === Downsample to 16kHz for Porcupine ===
+                    std::vector<int16_t> frame16k;
+                    frame16k.reserve(160);
+                    for (size_t i = 0; i < frame480.size(); i += 3) {
+                        frame16k.push_back(frame480[i]);
+                    }
+                    porcupine_buf.insert(porcupine_buf.end(),
+                                         frame16k.begin(), frame16k.end());
 
-        if (detect_wakeword(candidate)) {   // <-- run Nova detector
-            recording = true;
-            current_clip = candidate;
+                    while (!recording && porcupine_buf.size() >= 512) {
+                        int32_t keyword_index = -1;
+                        pv_status_t status = pv_porcupine_process(
+                            porcupine,
+                            porcupine_buf.data(),
+                            &keyword_index);
 
-                    // --- DoA ---
-                    float angle_deg = 0.0f, confidence = 0.0f;
-			    confidence = nova::audio::estimate_direction(buf.data(),
-                                got / cfg::kChannels,
-                                cfg::kRate,
-                                cfg::kMicSpacingM,
-                                &angle_deg);
-			    std::cout << " doa=" << angle_deg
-                              << " conf=" << confidence
-                              << std::endl;
+                        // pop the 512 we just processed
+                        porcupine_buf.erase(porcupine_buf.begin(),
+                                            porcupine_buf.begin() + 512);
 
+                        if (status == PV_STATUS_SUCCESS && keyword_index >= 0) {
+                            // Wake word detected → start recording
+                            std::vector<int16_t> candidate(prebuffer.begin(), prebuffer.end());
+                            candidate.insert(candidate.end(), frame480.begin(), frame480.end());
 
+                            recording = true;
+                            current_clip = candidate;
 
-        }
-    } else if (recording) {
-        current_clip.insert(current_clip.end(), frame.begin(), frame.end());
+                            float angle_deg = 0.0f, confidence = 0.0f;
+                            confidence = nova::audio::estimate_direction(buf.data(),
+                                                                         got / cfg::kChannels,
+                                                                         cfg::kRate,
+                                                                         cfg::kMicSpacingM,
+                                                                         &angle_deg);
 
-        if (!speech_detected) {
-            // speech ended → save clip
-            save_clip(current_clip, "wake_clip.wav");
-            upload_clip(current_clip);
-            recording = false;
-            current_clip.clear();
-        }
-    }
+                            std::cout << "[wakeword] doa=" << angle_deg
+                                      << " conf=" << confidence << std::endl;
+                        }
+                    }
 
-    // maintain rolling prebuffer
-    prebuffer.insert(prebuffer.end(), frame.begin(), frame.end());
-    while (prebuffer.size() > cfg::kRate) { // keep only ~1 sec
-        prebuffer.erase(prebuffer.begin(), prebuffer.begin() + frame.size());
-    }
+                    if (recording) {
+                        current_clip.insert(current_clip.end(), frame480.begin(), frame480.end());
 
-                    // --- Log ---
-                    std::cout << "[vad=" << speech_detected
-                              << "] rms=" << rms
-                              << " min=" << minv << " max=" << maxv
-                              << " doa=" << angle_deg
-                              << " conf=" << confidence
-                              << std::endl;
+                        if (!speech_detected) {
+                            save_clip(current_clip, "wake_clip.wav");
+                            upload_clip(current_clip);
+                            recording = false;
+                            current_clip.clear();
+                        }
+                    }
+
+                    // maintain rolling prebuffer
+                    prebuffer.insert(prebuffer.end(),
+                                     frame480.begin(), frame480.end());
+                    while (prebuffer.size() > cfg::kRate) {
+                        prebuffer.erase(prebuffer.begin(),
+                                        prebuffer.begin() + frame480.size());
+                    }
 
                     frame480.clear();
                 }
