@@ -37,10 +37,11 @@ namespace cfg {
     inline const char* kAlsaDevice   = "hw:2,0"; // check with `arecord -l`
     constexpr unsigned kRate         = 48000;
     constexpr unsigned kChannels     = 2;        // L/R (two mics time-division on I2S)
-    constexpr snd_pcm_format_t kFmt  = SND_PCM_FORMAT_S32_LE;
-    constexpr snd_pcm_uframes_t kPeriodFrames = 256;
+    constexpr snd_pcm_format_t kFormat  = SND_PCM_FORMAT_S32_LE;
+    constexpr snd_pcm_uframes_t kPeriodFrames = 480;
     constexpr float kMicSpacingM     = 0.189f;   // 18.9 cm
     constexpr int   kLevelShift      = 8;        // downshift when summing absolute
+    constexpr float kGain            = 1.0f;
     constexpr int64_t kLevelThresh   = 5e6;      // crude gate; calibrate later
     constexpr float kConfThresh      = 0.10f;    // crude conf gate; calibrate later
 
@@ -58,6 +59,47 @@ namespace cfg {
     constexpr auto kScanTickPeriod   = 5min;
 }
 // ------------------------------------------------------
+
+struct SpeechGate {
+    int voice_count = 0;
+    int silence_count = 0;
+    bool speech_active = false;
+
+    // parameters you can tune
+    static constexpr int kOnFrames  = 5;   // need 5 voiced frames (~50 ms) to activate
+    static constexpr int kOffFrames = 20;  // need 20 silent frames (~200 ms) to deactivate
+
+    bool update(int vad_result) {
+        if (vad_result == 1) {
+            voice_count++;
+            silence_count = 0;
+            if (!speech_active && voice_count >= kOnFrames) {
+                speech_active = true;
+            }
+        } else {
+            silence_count++;
+            voice_count = 0;
+            if (speech_active && silence_count >= kOffFrames) {
+                speech_active = false;
+            }
+        }
+        return speech_active;
+    }
+};
+
+struct DcFilter {
+    float prev_in = 0.0f;
+    float prev_out = 0.0f;
+
+    int16_t process(int16_t sample) {
+        constexpr float alpha = 0.995f; // cutoff ~20 Hz
+        float x = static_cast<float>(sample);
+        float y = alpha * (prev_out + x - prev_in);
+        prev_in = x;
+        prev_out = y;
+        return static_cast<int16_t>(std::clamp(y, -32768.0f, 32767.0f));
+    }
+};
 
 // Minimal event bus / state machine
 enum class State { CHARGING, IDLE, LISTENING, SPEAKING };
@@ -91,124 +133,130 @@ void scan_timer() {
 }
 
 void audio_doa_thread() {
-#ifndef __APPLE__
-  try {
-    std::cout << "[audio] thread starting...\n" << std::flush;
+	std::atomic<bool> running(true);
+	SpeechGate gate;
+	std::deque<int16_t> prebuffer;   // ~1 sec of audio
+	bool recording = false;
+	std::vector<int16_t> current_clip;
+    try {
+        std::cout << "[thread] audio_doa_thread started" << std::endl;
 
-    AlsaCapture cap(cfg::kAlsaDevice, cfg::kRate, cfg::kChannels, cfg::kFmt, cfg::kPeriodFrames);
-    std::vector<int32_t> buf;
+        // === ALSA device ===
+	AlsaCapture alsa(cfg::kAlsaDevice,
+                 cfg::kRate,
+                 cfg::kChannels,
+                 cfg::kFormat,
+                 cfg::kPeriodFrames);
 
-    // VAD init
-    VadInst* vad = WebRtcVad_Create();
-    if (!vad) throw std::runtime_error("WebRtcVad_Create failed");
-    if (WebRtcVad_Init(vad) != 0) throw std::runtime_error("WebRtcVad_Init failed");
-    if (WebRtcVad_set_mode(vad, 0) != 0) throw std::runtime_error("WebRtcVad_set_mode failed");
+        // === VAD ===
+        VadInst* vad = WebRtcVad_Create();
+        WebRtcVad_Init(vad);
+        WebRtcVad_set_mode(vad, 3); // 0=permissive, 3=restrictive
 
-    // Server client
-    ServerClient client("https://nova-server-iy13.onrender.com");
+        // === Buffers ===
+        std::vector<int32_t> buf(cfg::kPeriodFrames * cfg::kChannels);
+        std::vector<int16_t> mono;
+        mono.reserve(cfg::kPeriodFrames);
 
-    const int frame_size = 480; // 10ms @ 48k
-    std::vector<int16_t> mono;  mono.reserve(480*10); // reuse buffer
+        DcFilter dc_filter;
+        std::vector<int16_t> frame480;
+        frame480.reserve(480);
 
-    uint64_t last_log_ms = 0;
+        while (running) {
+            // const size_t got = alsa.read(buf.data(), buf.size());
+	    const size_t got = alsa.read(buf);
+            if (got == 0) continue;
 
-    while (!g_quit.load()) {
-      snd_pcm_sframes_t got = cap.read(buf);
-      if (got <= 0) continue;
+            // Stereo → mono + DC remove + gain
+            mono.resize(got / cfg::kChannels);
+            for (size_t i = 0; i < mono.size(); i++) {
+                int32_t left = buf[2 * i];
+                int32_t right = buf[2 * i + 1];
+                int32_t sample = (left + right) / 2;
 
-      // Simple level meter on left
-      int64_t level = 0;
-      for (snd_pcm_sframes_t i = 0; i < got; ++i) {
-        level += std::llabs((long long)buf[2*i + 0] >> cfg::kLevelShift);
-      }
+                int16_t shifted = static_cast<int16_t>(sample >> 14); // downshift
+                int16_t filtered = dc_filter.process(shifted);        // DC remove
+                int32_t amplified = static_cast<int32_t>(filtered * cfg::kGain);
+                mono[i] = std::clamp(amplified, -32768, 32767);
+            }
 
-      // --- S32 stereo -> S16 mono ---
-mono.resize(got);
-for (snd_pcm_sframes_t i = 0; i < got; ++i) {
-    int64_t l = buf[2*i + 0];
-    int64_t r = buf[2*i + 1];
-    int64_t m32 = (l + r) >> 1;    // average in 32-bit
-    mono[i] = (int16_t)(m32 >> 15); // was >>14; give a bit more headroom
-}
+            // Break into 480-sample frames
+            for (auto s : mono) {
+                frame480.push_back(s);
+                if (frame480.size() == 480) {
+                    // --- Debug stats ---
+                    long long sum = 0;
+                    int16_t minv = 32767, maxv = -32768;
+                    for (auto v : frame480) {
+                        sum += v * v;
+                        minv = std::min(minv, v);
+                        maxv = std::max(maxv, v);
+                    }
+                    float rms = std::sqrt(sum / 480.0f);
 
-    // --- DC offset removal ---
-    int64_t dc_sum = 0;
-    for (auto s : mono) dc_sum += s;
-    int32_t dc_offset = dc_sum / mono.size();
+                    // --- VAD ---
+		    int vad_result = WebRtcVad_Process(vad, cfg::kRate, frame480.data(), frame480.size());
+		    bool speech_detected = gate.update(vad_result);
 
-    for (auto &s : mono) {
-        s -= dc_offset; // recenter waveform around zero
+		    if (!recording && speech_detected) {
+        // dump prebuffer + current frame into candidate
+        std::vector<int16_t> candidate(prebuffer.begin(), prebuffer.end());
+        candidate.insert(candidate.end(), frame.begin(), frame.end());
+
+        if (detect_wakeword(candidate)) {   // <-- run Nova detector
+            recording = true;
+            current_clip = candidate;
+
+                    // --- DoA ---
+                    float angle_deg = 0.0f, confidence = 0.0f;
+			    confidence = nova::audio::estimate_direction(buf.data(),
+                                got / cfg::kChannels,
+                                cfg::kRate,
+                                cfg::kMicSpacingM,
+                                &angle_deg);
+			    std::cout << " doa=" << angle_deg
+                              << " conf=" << confidence
+                              << std::endl;
+
+
+
+        }
+    } else if (recording) {
+        current_clip.insert(current_clip.end(), frame.begin(), frame.end());
+
+        if (!speech_detected) {
+            // speech ended → save clip
+            save_clip(current_clip, "wake_clip.wav");
+            upload_clip(current_clip);
+            recording = false;
+            current_clip.clear();
+        }
     }
 
-    // --- Apply gain (safe clamp to int16) ---
-    constexpr float kGain = 10.0f; // adjust as needed
-    for (auto &s : mono) {
-        int32_t tmp = static_cast<int32_t>(s * kGain);
-        tmp = std::clamp(tmp, -32768, 32767);
-        s = static_cast<int16_t>(tmp);
+    // maintain rolling prebuffer
+    prebuffer.insert(prebuffer.end(), frame.begin(), frame.end());
+    while (prebuffer.size() > cfg::kRate) { // keep only ~1 sec
+        prebuffer.erase(prebuffer.begin(), prebuffer.begin() + frame.size());
     }
 
-    // --- Debug: RMS level (instead of flat sum) ---
-    double rms = 0.0;
-    int16_t min_val = INT16_MAX;
-    int16_t max_val = INT16_MIN;
+                    // --- Log ---
+                    std::cout << "[vad=" << speech_detected
+                              << "] rms=" << rms
+                              << " min=" << minv << " max=" << maxv
+                              << " doa=" << angle_deg
+                              << " conf=" << confidence
+                              << std::endl;
 
-    for (auto s : mono) {
-        rms += static_cast<double>(s) * s;
-        if (s < min_val) min_val = s;
-        if (s > max_val) max_val = s;
+                    frame480.clear();
+                }
+            }
+        }
+
+        WebRtcVad_Free(vad);
+        std::cout << "[thread] audio_doa_thread exiting" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[thread] exception: " << e.what() << std::endl;
     }
-    rms = std::sqrt(rms / mono.size());
-
-    int vad_result = WebRtcVad_Process(vad_handle, cfg::kRate, mono.data(), mono.size());
-    std::cout << "[audio] rms=" << rms
-              << " min=" << min_val
-              << " max=" << max_val
-              << " vad=" << vad_result
-              << std::endl;
-
-    bool speech_detected = (vad_result == 1);
-
-      if (!speech_detected) continue;
-
-      // Save raw buf (stereo S32) to WAV
-      const char* path = "/tmp/utterance.wav";
-      SF_INFO sfinfo{};
-      sfinfo.channels   = 2;
-      sfinfo.samplerate = cfg::kRate;
-      sfinfo.format     = SF_FORMAT_WAV | SF_FORMAT_PCM_32;
-
-      if (SNDFILE* f = sf_open(path, SFM_WRITE, &sfinfo)) {
-        sf_write_int(f, buf.data(), (sf_count_t)buf.size());
-        sf_close(f);
-        std::cout << "[save] wrote " << (buf.size()/2) << " frames to " << path << "\n";
-      } else {
-        std::cerr << "[save] sf_open failed\n";
-        continue;
-      }
-
-      // Upload to your server
-      std::string response;
-      if (client.upload_wav(path, response)) {
-        std::cout << "[upload] OK: " << response << "\n";
-      } else {
-        std::cerr << "[upload] FAILED\n";
-      }
-
-      // Optionally push an app event
-      push({Ev::WakeWord});
-    }
-
-    WebRtcVad_Free(vad);
-    std::cout << "[audio] thread exiting...\n";
-  } catch (const std::exception& e) {
-    std::cerr << "[audio] fatal: " << e.what() << "\n";
-    // Don’t kill the whole process—just stop this thread
-    while (!g_quit.load()) std::this_thread::sleep_for(1s);
-  }
-#else
-  while (!g_quit.load()) std::this_thread::sleep_for(200ms);
-#endif
 }
 
 int open_serial(const char* dev, speed_t baud) {
