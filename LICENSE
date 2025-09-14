@@ -20,8 +20,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-The VAD code under `pi3b/external/webrtcvad/` is from the WebRTC project, and has
-the following license:
+The VAD code under `pi3b/external/webrtcvad/webrtc` is from the WebRTC project, 
+and has the following license:
 
 ============================
 Copyright (c) 2011, The WebRTC project authors. All rights reserved.
