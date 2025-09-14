@@ -22,8 +22,7 @@ file(GLOB_RECURSE WEBRTCVAD_SOURCES
 add_library(webrtcvad STATIC ${WEBRTCVAD_SOURCES})
 
 target_include_directories(webrtcvad PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/vad/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad/webrtc/common_audio/signal_processing/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/webrtcvad
 )
 
 # Library: nova_audio
