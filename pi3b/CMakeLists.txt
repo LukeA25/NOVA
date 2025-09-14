@@ -63,9 +63,11 @@ target_link_libraries(nova_audio
 )
 
 # -------------------------
-# App executable
+# Executables
 # -------------------------
 
-add_executable(app apps/main.cpp)
 add_executable(recording_test tests/recording_test.cpp)
+target_link_libraries(recording_test PRIVATE nova_audio)
+
+add_executable(app apps/main.cpp)
 target_link_libraries(app PRIVATE nova_audio)

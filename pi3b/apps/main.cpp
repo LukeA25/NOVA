@@ -9,6 +9,7 @@
 #include <thread>
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 
 #include <termios.h>
 #include <unistd.h>
@@ -121,42 +122,52 @@ void audio_doa_thread() {
         level += std::llabs((long long)buf[2*i + 0] >> cfg::kLevelShift);
       }
 
-      // Apply a bit of gain before down-convert (optional)
-      constexpr float kGain = 50.0f; // ~15.5 dB
-      for (size_t i = 0; i < buf.size(); ++i) {
-        int64_t v = (int64_t)(buf[i] * kGain);
-        if (v > INT32_MAX) v = INT32_MAX;
-        if (v < INT32_MIN) v = INT32_MIN;
-        buf[i] = (int32_t)v;
-      }
+      // --- S32 stereo -> S16 mono ---
+mono.resize(got);
+for (snd_pcm_sframes_t i = 0; i < got; ++i) {
+    int64_t l = buf[2*i + 0];
+    int64_t r = buf[2*i + 1];
+    int64_t m32 = (l + r) >> 1;    // average in 32-bit
+    mono[i] = (int16_t)(m32 >> 15); // was >>14; give a bit more headroom
+}
 
-      // S32 stereo -> S16 mono (average L/R). Shift 16 bits (not 17) to keep a hair more energy.
-      mono.resize(got);
-      for (snd_pcm_sframes_t i = 0; i < got; ++i) {
-        int64_t l = buf[2*i + 0];
-        int64_t r = buf[2*i + 1];
-        int64_t m = (l + r) >> 1;          // average in 32-bit
-        mono[i] = (int16_t)(m >> 14);      // convert to 16-bit
-      }
+    // --- DC offset removal ---
+    int64_t dc_sum = 0;
+    for (auto s : mono) dc_sum += s;
+    int32_t dc_offset = dc_sum / mono.size();
 
-      // Run VAD over 10ms chunks
-      bool speech_detected = false;
-      for (size_t i = 0; i + frame_size <= mono.size(); i += frame_size) {
-        int vad_res = WebRtcVad_Process(vad, cfg::kRate, mono.data() + i, frame_size);
-        if (vad_res < 0) {
-          std::cerr << "[vad] error from WebRtcVad_Process\n";
-          break;
-        }
-        if (vad_res == 1) { speech_detected = true; break; }
-      }
+    for (auto &s : mono) {
+        s -= dc_offset; // recenter waveform around zero
+    }
 
-      // Lightweight console log ~10 Hz so you see *something*
-      uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now().time_since_epoch()).count();
-      if (now_ms - last_log_ms > 100) {
-        std::cout << "[audio] lvl=" << level << " vad=" << (speech_detected?1:0) << "\n" << std::flush;
-        last_log_ms = now_ms;
-      }
+    // --- Apply gain (safe clamp to int16) ---
+    constexpr float kGain = 10.0f; // adjust as needed
+    for (auto &s : mono) {
+        int32_t tmp = static_cast<int32_t>(s * kGain);
+        tmp = std::clamp(tmp, -32768, 32767);
+        s = static_cast<int16_t>(tmp);
+    }
+
+    // --- Debug: RMS level (instead of flat sum) ---
+    double rms = 0.0;
+    int16_t min_val = INT16_MAX;
+    int16_t max_val = INT16_MIN;
+
+    for (auto s : mono) {
+        rms += static_cast<double>(s) * s;
+        if (s < min_val) min_val = s;
+        if (s > max_val) max_val = s;
+    }
+    rms = std::sqrt(rms / mono.size());
+
+    int vad_result = WebRtcVad_Process(vad_handle, cfg::kRate, mono.data(), mono.size());
+    std::cout << "[audio] rms=" << rms
+              << " min=" << min_val
+              << " max=" << max_val
+              << " vad=" << vad_result
+              << std::endl;
+
+    bool speech_detected = (vad_result == 1);
 
       if (!speech_detected) continue;
 
