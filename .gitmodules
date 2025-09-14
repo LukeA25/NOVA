@@ -7,3 +7,6 @@
 [submodule "pico/external/pico-sdk"]
 	path = pico/external/pico-sdk
 	url = https://github.com/raspberrypi/pico-sdk.git
+[submodule "pi3b/external/porcupine"]
+	path = pi3b/external/porcupine
+	url = https://github.com/Picovoice/porcupine.git
