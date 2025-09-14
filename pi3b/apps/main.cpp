@@ -139,7 +139,7 @@ void upload_clip(const std::vector<int16_t>& samples) {
     curl_mime_name(part, "file");
     curl_mime_filedata(part, filename);
 
-    curl_easy_setopt(curl, CURLOPT_URL, "https://nova-server-iy13.onrender.com");
+    curl_easy_setopt(curl, CURLOPT_URL, "https://nova-server-iy13.onrender.com/process_audio");
     curl_easy_setopt(curl, CURLOPT_MIMEPOST, form);
 
     CURLcode res = curl_easy_perform(curl);
