@@ -1,54 +1,48 @@
 cmake_minimum_required(VERSION 3.13)
 
-# Import Pico SDK
-include(pico_sdk_import.cmake)
+# Pull in the Pico SDK
+include(${CMAKE_CURRENT_LIST_DIR}/external/pico-sdk/pico_sdk_init.cmake)
 
-# Project name and supported languages
 project(pico C CXX ASM)
-
-# C/C++ standard versions
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
-
-# Target RP2040 platform and FreeRTOS OS setting
-set(PICO_PLATFORM rp2040)
-set(PICO_OS freertos)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Initialize the SDK
+# Init SDK
 pico_sdk_init()
 
-# Add your FreeRTOS sources manually
-add_executable(pico
-    main.c
+# ---- FreeRTOS locations ----
+set(FREERTOS_DIR ${CMAKE_CURRENT_LIST_DIR}/external/FreeRTOS-Kernel)
+set(RP2040_PORT  ${FREERTOS_DIR}/portable/ThirdParty/GCC/RP2040)
 
-    # Core FreeRTOS
-    freertos/FreeRTOS-Kernel/list.c
-    freertos/FreeRTOS-Kernel/queue.c
-    freertos/FreeRTOS-Kernel/tasks.c
-    freertos/FreeRTOS-Kernel/timers.c
-    ${CMAKE_CURRENT_LIST_DIR}/freertos/FreeRTOS-Kernel/event_groups.c
-    freertos/FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/port.c
-    freertos/FreeRTOS-Kernel/portable/MemMang/heap_4.c
+add_executable(pico_app
+    src/main.c
+    ${FREERTOS_DIR}/list.c
+    ${FREERTOS_DIR}/queue.c
+    ${FREERTOS_DIR}/tasks.c
+    ${FREERTOS_DIR}/timers.c
+    ${FREERTOS_DIR}/event_groups.c
+    ${RP2040_PORT}/port.c
+    ${FREERTOS_DIR}/portable/MemMang/heap_4.c
 )
 
-set_source_files_properties(main.c PROPERTIES LANGUAGE C)
-
-# Include FreeRTOS and project directories
-target_include_directories(pico PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}
+# Where FreeRTOS headers live (+ your FreeRTOSConfig.h)
+target_include_directories(pico_app PRIVATE
+    ${FREERTOS_DIR}/include
+    ${RP2040_PORT}/include
     ${CMAKE_CURRENT_LIST_DIR}/freertos
-    freertos/FreeRTOS-Kernel/include
-    freertos/FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040
-    freertos/FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/include
 )
 
-# Link against Pico standard libraries
-target_link_libraries(pico
+# Link Pico libs you use
+target_link_libraries(pico_app
     pico_stdlib
     pico_cyw43_arch_none
     hardware_pwm
 )
 
-# Generate UF2 and bin files
-pico_add_extra_outputs(pico)
+# (optional) choose your stdio
+# pico_enable_stdio_usb(pico_app 1)
+# pico_enable_stdio_uart(pico_app 0)
+
+# UF2/bin/elf outputs
+pico_add_extra_outputs(pico_app)

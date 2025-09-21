@@ -14,7 +14,7 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "PICO_SDK_PATH": "${sourceDir}/pico-sdk",
+        "PICO_SDK_PATH": "${sourceDir}/external/pico-sdk",
         "PICO_TOOLCHAIN_PATH": "/Applications/ArmGNUToolchain/14.3.rel1/arm-none-eabi",
         "PICO_BOARD": "pico_w"
       }

@@ -5,10 +5,16 @@
 #include <boards/pico_w.h>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
+#include <hardware/uart.h>
 #include <pico/stdlib.h>
 #include <pico/cyw43_arch.h>
 #include <stdint.h>
 #include <stdio.h>
+
+#define UART_ID    uart0
+#define BAUD       115200
+#define TX_PIN     0
+#define RX_PIN     1
 
 // --- Easing Logic ---
 typedef enum {
@@ -22,7 +28,6 @@ static inline float ease_linear(float t)        { return t; }
 static inline float ease_in_quad(float t)       { return t * t; }
 static inline float ease_out_quad(float t)      { return t * (2.0f - t); }
 static inline float ease_in_out_smooth(float t) { return t * t * (3.0f - 2.0f * t); } // 3x^2 - 2x^3
-
 static inline float clamp01(float x) {
     if (x < 0.0f) return 0.0f;
     if (x > 1.0f) return 1.0f;
@@ -35,7 +40,7 @@ static inline float select_ease(EaseMode_t e, float t) {
         case EASE_OUT:     return ease_out_quad(t);
         case EASE_IN_OUT:  return ease_in_out_smooth(t);
         case EASE_NONE:
-        default:      return ease_linear(t);
+        default:           return ease_linear(t);
     }
 }
 // ----------------------
@@ -217,7 +222,6 @@ void stepper_task(void *pv) {
             // Advance to the next half-step
             stepper_p->phase = (stepper_p->phase + (stepper_p->dir > 0 ? 1 : 3)) & 3;
             stepper_write(&h, FULLSTEP4[stepper_p->phase]);
-
             period_ticks = pdMS_TO_TICKS(stepper_p->step_delay_us / 1000);
             if (period_ticks == 0) period_ticks = 1;
         }
@@ -267,6 +271,33 @@ void stepper_test_task(void *pv) {
     }
 }
 
+void uart_task(void *pv) {
+	uart_init(UART_ID, BAUD);
+    gpio_set_function(TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(RX_PIN, GPIO_FUNC_UART);
+    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(UART_ID, true);
+
+	char line[64];
+    size_t pos = 0;
+
+	for (;;) {
+		if (uart_is_readable(UART_ID)) {
+            char c = uart_getc(UART_ID);
+            if (c == '\n') {
+                line[pos] = '\0';
+                // TODO: parse e.g. sscanf(line, "DOA:%f", &angle_deg);
+                pos = 0;
+            } else if (pos + 1 < sizeof(line)) {
+                line[pos++] = c;
+            } else {
+                pos = 0;
+            }
+        }
+        sleep_ms(1);
+	}
+}
+
 void test_task(void *pv) {
     ServoState_t *s = (ServoState_t *)pv;
 
@@ -289,26 +320,20 @@ static HeadState_t head;
 int main() {
     stdio_init_all();
 
-    base_servo.pin = 18;
-    base_servo.target = (ServoTarget_t){
+	ServoTarget_t default_target = {
         .target_deg = 140.0f,
         .time_to_complete_ms = 5000.0f,
         .ease = EASE_NONE
     };
+
+    base_servo.pin = 18;
+    base_servo.target = default_target;
 
     mid_servo.pin = 19;
-    mid_servo.target = (ServoTarget_t){
-        .target_deg = 140.0f,
-        .time_to_complete_ms = 5000.0f,
-        .ease = EASE_NONE
-    };
+    mid_servo.target = default_target;
 
     end_servo.pin = 20;
-    end_servo.target = (ServoTarget_t){
-        .target_deg = 140.0f,
-        .time_to_complete_ms = 5000.0f,
-        .ease = EASE_NONE
-    };
+    end_servo.target = default_target;
 
     static Stepper_t m1 = { 
         .hw = {2,3,4,5},
@@ -340,6 +365,7 @@ int main() {
     head.steppers[1] = &m2;
     head.steppers[2] = &m3;
     
+    xTaskCreate(uart_task, "UART", 256, NULL, 4, NULL);
 
     // xTaskCreate(servo_task, "Base Servo", 512, &base_servo, 2, &base_servo.task);
     // xTaskCreate(servo_task, "Mid Servo", 512, &mid_servo, 2, &mid_servo.task);
@@ -349,8 +375,8 @@ int main() {
     xTaskCreate(stepper_task, "M2", 256, &m2, 2, NULL);
     xTaskCreate(stepper_task, "M3", 256, &m3, 2, NULL);
 
-    xTaskCreate(head_task, "Head", 256, &head, 2, &head.task);
-    xTaskCreate(stepper_test_task, "Stepper Test", 256, &head, 2, NULL);
+    xTaskCreate(head_task, "Head", 256, &head, 3, &head.task);
+    xTaskCreate(stepper_test_task, "Stepper Test", 256, &head, 3, NULL);
     // xTaskCreate(test_task, "Idle", 256, &base_servo, 1, NULL);
 
    vTaskStartScheduler();
