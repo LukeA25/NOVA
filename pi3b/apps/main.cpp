@@ -62,6 +62,41 @@ namespace cfg {
     constexpr auto kIdleTickPeriod   = 30s;
     constexpr auto kScanTickPeriod   = 5min;
 }
+
+#pragma pack(push,1)
+
+// replicate EaseMode_t
+typedef enum {
+    EASE_NONE,
+    EASE_IN,
+    EASE_OUT,
+    EASE_IN_OUT,
+} EaseMode_t;
+
+// replicate ServoTarget_t
+typedef struct {
+    float      target_deg;
+    float      time_to_complete_ms;
+    EaseMode_t ease;
+} ServoTarget_t;
+
+// replicate Euler3f
+typedef struct { float yaw, pitch, roll; } Euler3f;
+
+// replicate HeadTarget_t
+typedef struct {
+    Euler3f    omega;
+    float      time_to_complete_ms;
+} HeadTarget_t;
+
+// replicate FullCommand_t (head + 3 servos)
+typedef struct {
+    HeadTarget_t head;
+    ServoTarget_t servos[3];
+} FullCommand_t;
+
+#pragma pack(pop)
+
 // ------------------------------------------------------
 
 struct DcFilter {
@@ -397,31 +432,35 @@ void uart_thread() {
     if (fd < 0) return;
 
     while (!g_quit.load()) {
-        // EXAMPLE: Send pitch, roll, yaw, and servo targets
-        float pitch = 0.0f;
-        float roll = 0.0f;
-        float yaw = 90.0f;
-        float time = 1.0f;
+        FullCommand_t cmd{};
+        // Head target
+        cmd.head.omega.yaw   = 90.0f;
+        cmd.head.omega.pitch = 0.0f;
+        cmd.head.omega.roll  = 0.0f;
+        cmd.head.time_to_complete_ms = 1000.0f;
 
-        // Servos: degree, time, ease
-        float base[] = {90.0f, 1.0f, 0.5f};
-        float mid[]  = {45.0f, 1.0f, 0.5f};
-        float end[]  = {120.0f, 1.0f, 0.5f};
+        // Servos
+        cmd.servos[0].target_deg = 90.0f;
+        cmd.servos[0].time_to_complete_ms = 1000.0f;
+        cmd.servos[0].ease = EASE_NONE;
 
-        // Serialize everything (binary or text – choose one format)
-        // TEXT EXAMPLE (easy for debugging):
-        char buffer[256];
-        snprintf(buffer, sizeof(buffer),
-            "%f,%f,%f,%f, %f,%f,%f, %f,%f,%f, %f,%f,%f\n",
-            pitch, roll, yaw, time,
-            base[0], base[1], base[2],
-            mid[0], mid[1], mid[2],
-            end[0], end[1], end[2]);
+        cmd.servos[1].target_deg = 45.0f;
+        cmd.servos[1].time_to_complete_ms = 1000.0f;
+        cmd.servos[1].ease = EASE_NONE;
 
-        write(fd, buffer, strlen(buffer));
-        std::cout << "[UART TX] " << buffer;
+        cmd.servos[2].target_deg = 120.0f;
+        cmd.servos[2].time_to_complete_ms = 1000.0f;
+        cmd.servos[2].ease = EASE_NONE;
 
-        sleep(1); // send once per second
+        // send the whole struct
+        ssize_t n = write(fd, &cmd, sizeof(cmd));
+        if (n != sizeof(cmd)) {
+            perror("UART write");
+        } else {
+            std::cout << "[UART TX] Sent " << n << " bytes" << std::endl;
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
     ::close(fd);
