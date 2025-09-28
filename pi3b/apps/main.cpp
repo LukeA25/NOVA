@@ -10,7 +10,6 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
-
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -251,27 +250,27 @@ void audio_doa_thread() {
         WebRtcVad_Init(vad);
         WebRtcVad_set_mode(vad, 3);
 
-	// === Porcupine Init ===
-	nova::PorcupineHandler porcupine(
-	    "hsbr8a0ahcO/A8E+4iABuOkYDSTA17VcQgtDLxggsC6twCiKQAFLLA==",
+        // === Porcupine Init ===
+        nova::PorcupineHandler porcupine(
+	        "hsbr8a0ahcO/A8E+4iABuOkYDSTA17VcQgtDLxggsC6twCiKQAFLLA==",
             "/home/nova/NOVA/pi3b/external/porcupine/lib/common/porcupine_params.pv",
             "/home/nova/NOVA/pi3b/models/Hey-Nova_en_raspberry-pi_v3_0_0.ppn"
         );
 
-	// === Speex Init ===
-	int err;
-	resampler = speex_resampler_init(
-	    1,          // 1 channel (mono)
-	    48000,      // input rate (your source audio)
-	    16000,      // output rate (Porcupine expects this)
-	    5,          // quality level (0 = worst, 10 = best)
-	    &err
-	);
+        // === Speex Init ===
+        int err;
+        resampler = speex_resampler_init(
+            1,          // 1 channel (mono)
+            48000,      // input rate (your source audio)
+            16000,      // output rate (Porcupine expects this)
+            5,          // quality level (0 = worst, 10 = best)
+            &err
+        );
 
-	if (err != RESAMPLER_ERR_SUCCESS || resampler == nullptr) {
-	    std::cerr << "Failed to init Speex resampler: " << speex_resampler_strerror(err) << std::endl;
-	    return;
-	}
+        if (err != RESAMPLER_ERR_SUCCESS || resampler == nullptr) {
+            std::cerr << "Failed to init Speex resampler: " << speex_resampler_strerror(err) << std::endl;
+            return;
+        }
 
         // === Buffers ===
         std::vector<int32_t> buf(cfg::kPeriodFrames * cfg::kChannels);
@@ -282,9 +281,9 @@ void audio_doa_thread() {
         std::vector<int16_t> frame480;
         frame480.reserve(480);
 
-	std::vector<int16_t> porcupine_frame;
-	porcupine_frame.reserve(700);
-	std::vector<int16_t> clip_buffer;
+        std::vector<int16_t> porcupine_frame;
+        porcupine_frame.reserve(700);
+        std::vector<int16_t> clip_buffer;
 
         while (!g_quit.load()) {
             const size_t got = alsa.read(buf);
@@ -304,98 +303,127 @@ void audio_doa_thread() {
             }
 
             // Break into 480-sample frames
-	    for (auto s : mono) {
-	    frame480.push_back(s);
+            for (auto s : mono) {
+                frame480.push_back(s);
 
-	    if (frame480.size() == 480) {
-		// --- VAD ---
-		int vad_result = WebRtcVad_Process(vad, cfg::kRate,
-                                           frame480.data(), frame480.size());
-		bool speech_detected = gate.update(vad_result);
+                if (frame480.size() == 480) {
+                    // --- VAD ---
+                    int vad_result = WebRtcVad_Process(vad, cfg::kRate,
+                                                       frame480.data(), frame480.size());
+                    bool speech_detected = gate.update(vad_result);
 
-		std::vector<int16_t> downsampled_16k(160);
-		spx_uint32_t in_len = 480;
-		spx_uint32_t out_len = 160;
-		speex_resampler_process_int(resampler, 0,
-                            frame480.data(), &in_len,
-                            downsampled_16k.data(), &out_len);
+                    std::vector<int16_t> downsampled_16k(160);
+                    spx_uint32_t in_len = 480;
+                    spx_uint32_t out_len = 160;
+                    speex_resampler_process_int(resampler, 0,
+                                        frame480.data(), &in_len,
+                                        downsampled_16k.data(), &out_len);
 
-		porcupine_frame.insert(porcupine_frame.end(),
-                      downsampled_16k.begin(),
-                      downsampled_16k.begin() + out_len);
+                    porcupine_frame.insert(porcupine_frame.end(),
+                                  downsampled_16k.begin(),
+                                  downsampled_16k.begin() + out_len);
 
-		// Process complete frames
-		while (porcupine_frame.size() >= 512) {
-		    int keyword_index = porcupine.process_frame(porcupine_frame.data());
+                    // Process complete frames
+                    while (porcupine_frame.size() >= 512) {
+                        int keyword_index = porcupine.process_frame(porcupine_frame.data());
 
-		    if (keyword_index >= 0) {
-			std::cout << "[Wake Word] Detected index " << keyword_index << std::endl;
-			wake_detected = true;
-			recording = true;
-			clip_buffer.clear();
-		    }
+                        if (keyword_index >= 0) {
+                            std::cout << "[Wake Word] Detected index " << keyword_index << std::endl;
+                            wake_detected = true;
+                            recording = true;
+                            clip_buffer.clear();
+                        }
 
-		    // Remove processed samples
-		    porcupine_frame.erase(porcupine_frame.begin(),
-					 porcupine_frame.begin() + 512);
-		}
+                        // Remove processed samples
+                        porcupine_frame.erase(porcupine_frame.begin(),
+                                 porcupine_frame.begin() + 512);
+                    }
 
-		// --- If recording, store the raw frames ---
-		if (recording) {
-		    clip_buffer.insert(clip_buffer.end(), frame480.begin(), frame480.end());
-		}
+                    // --- If recording, store the raw frames ---
+                    if (recording) {
+                        clip_buffer.insert(clip_buffer.end(), frame480.begin(), frame480.end());
+                    }
 
-		// --- End of recording condition ---
-		if (!speech_detected && recording) {
-		    std::cout << "Speech ended, saving clip..." << std::endl;
-		    save_clip(clip_buffer, "voice_clip.wav");
-		    upload_clip(clip_buffer);
-		    clip_buffer.clear();
-		    recording = false;
-		    wake_detected = false;
-		}
+                    // --- End of recording condition ---
+                    if (!speech_detected && recording) {
+                        std::cout << "Speech ended, saving clip..." << std::endl;
+                        save_clip(clip_buffer, "voice_clip.wav");
+                        upload_clip(clip_buffer);
+                        clip_buffer.clear();
+                        recording = false;
+                        wake_detected = false;
+                    }
 
-		frame480.clear();
-	    }
-	}
+                    frame480.clear();
+                }
+            }
         }
 
         WebRtcVad_Free(vad);
-	speex_resampler_destroy(resampler);
+        speex_resampler_destroy(resampler);
         std::cout << "[thread] audio_doa_thread exiting" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[thread] exception: " << e.what() << std::endl;
     }
 }
 
-int open_serial(const char* dev, speed_t baud) {
-    int fd = ::open(dev, O_RDWR | O_NOCTTY | O_NONBLOCK);
-    if (fd < 0) { perror("open"); std::exit(1); }
+int open_serial(const char* device, int baud) {
+    int fd = ::open(device, O_RDWR | O_NOCTTY);
+    if (fd == -1) {
+        perror("Failed to open UART");
+        return -1;
+    }
 
-    termios tio{};
-    if (tcgetattr(fd, &tio) < 0) { perror("tcgetattr"); std::exit(1); }
+    struct termios options;
+    tcgetattr(fd, &options);
+    cfsetispeed(&options, baud);
+    cfsetospeed(&options, baud);
+    options.c_cflag |= (CLOCAL | CREAD);
+    options.c_cflag &= ~CSIZE;
+    options.c_cflag |= CS8;
+    options.c_cflag &= ~PARENB;
+    options.c_cflag &= ~CSTOPB;
+    options.c_cflag &= ~CRTSCTS;
+    options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+    options.c_iflag &= ~(IXON | IXOFF | IXANY);
+    options.c_oflag &= ~OPOST;
 
-    cfmakeraw(&tio);
-    cfsetispeed(&tio, baud);
-    cfsetospeed(&tio, baud);
-    tio.c_cflag |= (CLOCAL | CREAD);
-    tio.c_cflag &= ~PARENB;  // 8N1
-    tio.c_cflag &= ~CSTOPB;
-    tio.c_cflag &= ~CSIZE;
-    tio.c_cflag |= CS8;
-    tio.c_cc[VMIN]  = 0;     // non-blocking read
-    tio.c_cc[VTIME] = 0;
-
-    if (tcsetattr(fd, TCSANOW, &tio) < 0) { perror("tcsetattr"); std::exit(1); }
+    tcsetattr(fd, TCSANOW, &options);
     return fd;
 }
 
-// Sends the *live DoA* to the Pico over UART every 200 ms
 void uart_thread() {
     int fd = open_serial(cfg::kUartDev, cfg::kUartBaud);
+    if (fd < 0) return;
 
     while (!g_quit.load()) {
+        // EXAMPLE: Send pitch, roll, yaw, and servo targets
+        float pitch = 0.0f;
+        float roll = 0.0f;
+        float yaw = 90.0f;
+        float time = 1.0f;
+
+        // Servos: degree, time, ease
+        float base[] = {90.0f, 1.0f, 0.5f};
+        float mid[]  = {45.0f, 1.0f, 0.5f};
+        float end[]  = {120.0f, 1.0f, 0.5f};
+
+        // Serialize everything (binary or text – choose one format)
+        // TEXT EXAMPLE (easy for debugging):
+        char buffer[256];
+        snprintf(buffer, sizeof(buffer),
+            "%f,%f,%f,%f, %f,%f,%f, %f,%f,%f, %f,%f,%f\n",
+            pitch, roll, yaw, time,
+            base[0], base[1], base[2],
+            mid[0], mid[1], mid[2],
+            end[0], end[1], end[2]);
+
+        write(fd, buffer, strlen(buffer));
+        std::cout << "[UART TX] " << buffer;
+
+        sleep(1); // send once per second
     }
+
     ::close(fd);
 }
 
