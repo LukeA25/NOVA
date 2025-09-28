@@ -453,7 +453,31 @@ void uart_thread() {
         cmd.servos[2].ease = EASE_NONE;
 
         // send the whole struct
-        ssize_t n = write(fd, &cmd, sizeof(cmd));
+        uint8_t buffer[31];
+        buffer[0] = 0xAB;
+        buffer[1] = 0xCD;
+
+        memcpy(&buffer[2],  &cmd.head.omega.pitch, 4);
+        memcpy(&buffer[6],  &cmd.head.omega.roll,  4);
+        memcpy(&buffer[10], &cmd.head.omega.yaw,   4);
+
+        buffer[14] = cmd.head.time_to_complete_ms & 0xFF;
+        buffer[15] = (cmd.head.time_to_complete_ms >> 8) & 0xFF;
+
+        for (int i = 0; i < 3; ++i) {
+            int offset = 16 + i * 5;
+            uint16_t deg = cmd.servos[i].target_deg;
+            uint16_t time = cmd.servos[i].time_to_complete_ms;
+            uint8_t ease = cmd.servos[i].ease;
+
+            buffer[offset + 0] = deg & 0xFF;
+            buffer[offset + 1] = (deg >> 8) & 0xFF;
+            buffer[offset + 2] = time & 0xFF;
+            buffer[offset + 3] = (time >> 8) & 0xFF;
+            buffer[offset + 4] = ease;
+        }
+
+        ssize_t n = write(fd, buffer, 31);
         if (n != sizeof(cmd)) {
             perror("UART write");
         } else {
