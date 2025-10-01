@@ -41,6 +41,18 @@
 
 ---
 
+## 🧩 Hardware Design Files
+
+All mechanical and electrical files are open source and included in the `/hardware/` folder.
+
+- 🛠️ [CAD (Fusion 360, Step, STL)](hardware/cad/)
+- ⚡ [PCB (Fusion 360, Gerbers)](hardware/pcb/)
+- 📐 3D models for integration testing (STEP)
+
+You’re free to remix or extend them for your own robotic assistant.
+
+---
+
 ## 🚀 Getting Started
 
 
