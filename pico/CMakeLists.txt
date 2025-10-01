@@ -46,3 +46,5 @@ target_link_libraries(pico_app
 
 # UF2/bin/elf outputs
 pico_add_extra_outputs(pico_app)
+pico_enable_stdio_usb(pico_app 1)
+pico_enable_stdio_uart(pico_app 0)

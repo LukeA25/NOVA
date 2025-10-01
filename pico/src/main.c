@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Luke Anderson – MIT License
+
 #include "FreeRTOS.h"
 #include "task.h"
 #include "timers.h"
@@ -13,8 +15,8 @@
 
 #define UART_ID    uart0
 #define BAUD       115200
-#define TX_PIN     0
-#define RX_PIN     1
+#define TX_PIN     16
+#define RX_PIN     17
 
 // --- Easing Logic ---
 typedef enum {
@@ -63,16 +65,16 @@ typedef struct {
 
 
 // --- Stepper Structs --- 
-typedef struct { float yaw_deg, pitch_deg, roll_deg; } Euler3f;
+typedef struct { float yaw, pitch, roll; } Euler3f;
 
 typedef struct {
-    Euler3f    target;
-    float      time_to_complete_ms;
-    EaseMode_t ease;
+    Euler3f    omega;
+    uint16_t   time_to_complete_ms;
 } HeadTarget_t;
 
 typedef struct {
-  uint8_t in1, in2, in3, in4;
+    uint8_t step_pin;
+    uint8_t dir_pin;
 } StepperHW;
 
 typedef struct {
@@ -89,11 +91,19 @@ typedef struct {
     SemaphoreHandle_t lock;
     Stepper_t*        steppers[3];
 } HeadState_t;
-
-
-static const uint8_t FULLSTEP4[4] = { 0b1100, 0b0110, 0b0011, 0b1001 };
 // ----------------------
 
+// --- UART Structs --- 
+typedef struct {
+    HeadTarget_t head;
+    ServoTarget_t servos[3];
+} FullCommand_t;
+
+typedef struct {
+    HeadState_t *head;
+    ServoState_t *servos[3];
+} ControlBundle_t;
+// ----------------------
 
 void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer,
                                    StackType_t **ppxIdleTaskStackBuffer,
@@ -120,14 +130,7 @@ void vApplicationStackOverflowHook(TaskHandle_t t, char *name){
 }
 
 void vApplicationMallocFailedHook(void){
-    printf("MALLOC FAILED\n"); for(;;){}
-}
-
-void servo_set_target(ServoState_t *s, float deg, float time, EaseMode_t ease) {
-    ServoTarget_t t = { .target_deg = deg, .time_to_complete_ms = time, .ease = ease };
-    s->target = t;
-    xTaskNotifyGive(s->task);
-}
+    printf("MALLOC FAILED\n"); for(;;){} }
 
 static inline uint16_t angle_to_us(float deg) {
     if (deg < 0.f)   deg = 0.f;
@@ -137,6 +140,38 @@ static inline uint16_t angle_to_us(float deg) {
 
 static inline float absf(float x) {
     return x < 0.0f ? -x : x;
+}
+
+static inline float fmaxf(float x, float y) {
+    return x > y ? x : y;
+}
+
+void compute_motor_speeds(Euler3f omega, float* m_out) {
+    float c = 0.7071f;  // ≈ sqrt(2)/2
+    float c2 = 0.3535f; // ≈ 0.5 * sqrt(2)/2
+    float s2 = 0.6124f; // ≈ sqrt(3)/2 * sqrt(2)/2
+
+    // Compute raw motor "speeds" (steps/sec, not delay yet)
+    float raw[3];
+    raw[0] = c * omega.yaw + c * omega.pitch;
+    raw[1] = c2 * -omega.pitch + s2 * omega.roll + c * omega.yaw;
+    raw[2] = c2 * -omega.pitch - s2 * omega.roll + c * omega.yaw;
+
+    // Find max absolute speed
+    float max_speed = fmaxf(absf(raw[0]), fmaxf(absf(raw[1]), absf(raw[2])));
+
+    if (max_speed < 1e-3f) {
+        m_out[0] = m_out[1] = m_out[2] = INTMAX_MAX;
+        return;
+    }
+
+    for (int i = 0; i < 3; ++i) {
+        if (raw[i] == 0.0f) {
+            m_out[i] = 1e6f; // no movement
+        } else {
+            m_out[i] = max_speed / raw[i] * 1000;
+        }
+    }
 }
 
 void servo_task(void *pv) {
@@ -192,38 +227,32 @@ void servo_task(void *pv) {
     }
 }
 
-static inline void stepper_write(const StepperHW* h, uint8_t mask){
-    gpio_put(h->in1, (mask>>3)&1);
-    gpio_put(h->in2, (mask>>2)&1);
-    gpio_put(h->in3, (mask>>1)&1);
-    gpio_put(h->in4, (mask>>0)&1);
-}
-
 void stepper_task(void *pv) {
     Stepper_t *stepper_p = (Stepper_t *)pv;
     StepperHW h = stepper_p->hw;
 
     // Initialize pins
-    gpio_init(h.in1); gpio_set_dir(h.in1, GPIO_OUT);
-    gpio_init(h.in2); gpio_set_dir(h.in2, GPIO_OUT);
-    gpio_init(h.in3); gpio_set_dir(h.in3, GPIO_OUT);
-    gpio_init(h.in4); gpio_set_dir(h.in4, GPIO_OUT);
+    gpio_init(h.step_pin); gpio_set_dir(h.step_pin, GPIO_OUT);
+    gpio_init(h.dir_pin);  gpio_set_dir(h.dir_pin, GPIO_OUT);
 
     // Energize initial phase explicitly
     stepper_p->phase = 0;
-    stepper_write(&h, FULLSTEP4[stepper_p->phase]);
 
     TickType_t period_ticks = pdMS_TO_TICKS(stepper_p->step_delay_us / 1000);
     if (period_ticks == 0) period_ticks = 1;
     TickType_t next_wake = xTaskGetTickCount();
 
+    int step = 0;
+
     for (;;) {
+        gpio_put(h.dir_pin, stepper_p->dir > 0 ? 1 : 0);
+
         if (stepper_p->dir != 0) {
-            // Advance to the next half-step
-            stepper_p->phase = (stepper_p->phase + (stepper_p->dir > 0 ? 1 : 3)) & 3;
-            stepper_write(&h, FULLSTEP4[stepper_p->phase]);
+            gpio_put(h.step_pin, step);
+            step ^= 1;
             period_ticks = pdMS_TO_TICKS(stepper_p->step_delay_us / 1000);
-            if (period_ticks == 0) period_ticks = 1;
+        } else {
+            period_ticks = pdMS_TO_TICKS(1);
         }
 
         vTaskDelayUntil(&next_wake, period_ticks);
@@ -241,8 +270,13 @@ void head_task(void *pv) {
         TickType_t dur   = pdMS_TO_TICKS((uint32_t)target.time_to_complete_ms);
         if (dur == 0) dur = pdMS_TO_TICKS(1);
 
-        // TODO: set each motor's direction from tgt.yaw/pitch/roll mapping
-        for (int i = 0; i < 3; ++i) h_p->steppers[i]->dir = +1;
+        float speeds[3];
+        compute_motor_speeds(target.omega, speeds);
+
+        for (int i = 0; i < 3; i++) {
+            h_p->steppers[i]->dir = (speeds[i] > 0) ? 1 : ((speeds[i] < 0) ? -1 : 0);
+            h_p->steppers[i]->step_delay_us = absf(speeds[i]);
+        }
 
         // Run until duration elapses (or until a *new* command arrives)
         for (TickType_t now = start; (now - start) < dur; now = xTaskGetTickCount()) {
@@ -259,55 +293,89 @@ void head_task(void *pv) {
     }
 }
 
-void stepper_test_task(void *pv) {
-    HeadState_t *h_p = (HeadState_t *)pv;
+void uart_command_task(void *pv) {
+    ControlBundle_t* bundle_p = (ControlBundle_t*)pv;
+    uint8_t buffer[32]; // one extra just in case
+    FullCommand_t cmd;
+
+    uart_init(UART_ID, BAUD);
+    gpio_set_function(TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(RX_PIN, GPIO_FUNC_UART);
+
+    while (uart_is_readable(UART_ID)) {
+        uint8_t dump;
+        uart_read_blocking(UART_ID, &dump, 1);
+    }
 
     for (;;) {
-        HeadTarget_t test = {.target = {3,3,3}, .time_to_complete_ms = 2000, .ease = EASE_NONE };
-        h_p->target = test;
-        xTaskNotifyGive(h_p->task);
+        // Find the header first
+        uint8_t byte;
+        while (1) {
+            uart_read_blocking(UART_ID, &byte, 1);
+            if (byte == 0xAB) {
+                uart_read_blocking(UART_ID, &byte, 1);
+                if (byte == 0xCD) {
+                    // Header matched, break out
+                    break;
+                }
+            }
+        }
 
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        // Header is already found, read the rest of the 29 bytes
+        buffer[0] = 0xAB;
+        buffer[1] = 0xCD;
+        uart_read_blocking(UART_ID, &buffer[2], 29);  // total now 31
+
+        printf("Received header!\n");
+
+        // Continue with parsing...
+        cmd.head.omega.pitch = *((float*)&buffer[2]);
+        cmd.head.omega.roll  = *((float*)&buffer[6]);
+        cmd.head.omega.yaw   = *((float*)&buffer[10]);
+        cmd.head.time_to_complete_ms = (uint16_t)buffer[14] | ((uint16_t)buffer[15] << 8);
+
+        for (int i = 0; i < 3; i++) {
+            int offset = 16 + i * 5;
+            cmd.servos[i].target_deg = (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
+            cmd.servos[i].time_to_complete_ms = (uint16_t)buffer[offset + 2] | ((uint16_t)buffer[offset + 3] << 8);
+            cmd.servos[i].ease = buffer[offset + 4];
+        }
+
+        // Debug print
+        printf("[UART RX] yaw=%.1f pitch=%.1f roll=%.1f servo0=%.1f\n",
+            cmd.head.omega.yaw, cmd.head.omega.pitch, cmd.head.omega.roll,
+            cmd.servos[0].target_deg);
+
+        // Notify tasks
+        bundle_p->head->target = cmd.head;
+        xTaskNotifyGive(bundle_p->head->task);
+        for (int i = 0; i < 3; i++) {
+            bundle_p->servos[i]->target = cmd.servos[i];
+            xTaskNotifyGive(bundle_p->servos[i]->task);
+        }
     }
 }
 
-void uart_task(void *pv) {
-	uart_init(UART_ID, BAUD);
-    gpio_set_function(TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(RX_PIN, GPIO_FUNC_UART);
-    uart_set_format(UART_ID, 8, 1, UART_PARITY_NONE);
-    uart_set_fifo_enabled(UART_ID, true);
+void stepper_test_task(void *pv) {
+    HeadState_t *h_p = (HeadState_t *)pv;
 
-	char line[64];
-    size_t pos = 0;
-
-	for (;;) {
-		if (uart_is_readable(UART_ID)) {
-            char c = uart_getc(UART_ID);
-            if (c == '\n') {
-                line[pos] = '\0';
-                // TODO: parse e.g. sscanf(line, "DOA:%f", &angle_deg);
-                pos = 0;
-            } else if (pos + 1 < sizeof(line)) {
-                line[pos++] = c;
-            } else {
-                pos = 0;
-            }
-        }
-        sleep_ms(1);
-	}
-}
-
-void test_task(void *pv) {
-    ServoState_t *s = (ServoState_t *)pv;
+    HeadTarget_t test = { .omega = {0,0,0}, .time_to_complete_ms = 5000 }; // 9700
 
     for (;;) {
-        servo_set_target(s, 50.0f, 4000.0f, EASE_IN_OUT);
-        vTaskDelay(pdMS_TO_TICKS(6000));
-        servo_set_target(s, 140.0f, 2000.0f, EASE_IN);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        servo_set_target(s, 230.0f, 1000.0f, EASE_NONE);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        test.omega.pitch = 30; test.omega.roll = 0; test.omega.yaw = 0;
+        h_p->target = test;
+        xTaskNotifyGive(h_p->task);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+
+        test.omega.pitch = 0; test.omega.roll = 30; test.omega.yaw = 0;
+        h_p->target = test;
+        xTaskNotifyGive(h_p->task);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+
+        test.omega.pitch = 0; test.omega.roll = 0; test.omega.yaw = 30;
+        h_p->target = test;
+        xTaskNotifyGive(h_p->task);
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
@@ -336,50 +404,51 @@ int main() {
     end_servo.target = default_target;
 
     static Stepper_t m1 = { 
-        .hw = {2,3,4,5},
+        .hw = { .step_pin = 3, .dir_pin = 2 },
         .dir = 0, 
-        .step_delay_us = 2000, 
+        .step_delay_us = 1000,
         .phase = 0 
     };
     static Stepper_t m2 = {
-        .hw = {6,7,8,9},
+        .hw = { .step_pin = 7, .dir_pin = 6 },
         .dir = 0,
-        .step_delay_us = 2000,
+        .step_delay_us = 1000,
         .phase = 0
     };
     static Stepper_t m3 = {
-        .hw = {10,11,12,13},
+        .hw = { .step_pin = 11, .dir_pin = 10 },
         .dir = 0,
-        .step_delay_us = 2000, 
+        .step_delay_us = 1000, 
         .phase = 0 
     };
 
     head.target = (HeadTarget_t){
-        .target = {0,0,0},
-        .time_to_complete_ms = 0.0f,
-        .ease = EASE_NONE
+        .omega = {0,0,0},
+        .time_to_complete_ms = 0,
     };
     head.current_rot = (Euler3f){0,0,0};
     head.lock = xSemaphoreCreateMutex();
     head.steppers[0] = &m1;
     head.steppers[1] = &m2;
     head.steppers[2] = &m3;
-    
-    xTaskCreate(uart_task, "UART", 256, NULL, 4, NULL);
 
-    // xTaskCreate(servo_task, "Base Servo", 512, &base_servo, 2, &base_servo.task);
-    // xTaskCreate(servo_task, "Mid Servo", 512, &mid_servo, 2, &mid_servo.task);
-    // xTaskCreate(servo_task, "End Servo", 512, &end_servo, 2, &end_servo.task);
+    static ControlBundle_t bundle = {
+        .head = &head,
+        .servos = { &base_servo, &mid_servo, &end_servo },
+    };
+    
+    xTaskCreate(uart_command_task, "Idle", 256, &bundle, 1, NULL);
+
+    xTaskCreate(servo_task, "Base Servo", 512, &base_servo, 2, &base_servo.task);
+    xTaskCreate(servo_task, "Mid Servo", 512, &mid_servo, 2, &mid_servo.task);
+    xTaskCreate(servo_task, "End Servo", 512, &end_servo, 2, &end_servo.task);
 
     xTaskCreate(stepper_task, "M1", 256, &m1, 2, NULL);
     xTaskCreate(stepper_task, "M2", 256, &m2, 2, NULL);
     xTaskCreate(stepper_task, "M3", 256, &m3, 2, NULL);
-
     xTaskCreate(head_task, "Head", 256, &head, 3, &head.task);
-    xTaskCreate(stepper_test_task, "Stepper Test", 256, &head, 3, NULL);
-    // xTaskCreate(test_task, "Idle", 256, &base_servo, 1, NULL);
 
-   vTaskStartScheduler();
+    vTaskStartScheduler();
 
     for (;;) { }
     return 0;
