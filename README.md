@@ -2,7 +2,7 @@
 
 **NOVA** (Network-Oriented Voice Assistant) is an open-source robotic desk assistant that combines AI, embedded systems, and animatronics. Designed to be a physical manifestation of a smart assistant, NOVA is capable of tracking, reacting, and interacting with users through voice, vision, and motion — inspired by systems like J.A.R.V.I.S. and GLaDOS.
 
-![NOVA Animation](media/demo.gif)
+![NOVA Animation](media/off.png)
 
 ---
 
