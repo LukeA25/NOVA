@@ -1,3 +1,44 @@
+#include <wiringPi.h>
+#include <iostream>
+#include <unistd.h> // for sleep
+
+// BCM GPIOs
+#define RED_PIN    12
+#define GREEN_PIN  13
+#define BLUE_PIN    6
+
+int main() {
+    // Initialize wiringPi with BCM GPIO numbering
+    if (wiringPiSetupGpio() == -1) {
+        std::cerr << "Failed to initialize wiringPi\n";
+        return 1;
+    }
+
+    // Set pin modes
+    pinMode(RED_PIN, OUTPUT);
+    pinMode(GREEN_PIN, OUTPUT);
+    pinMode(BLUE_PIN, OUTPUT);
+
+    // Turn on all LEDs
+    digitalWrite(RED_PIN, HIGH);
+    digitalWrite(GREEN_PIN, HIGH);
+    digitalWrite(BLUE_PIN, HIGH);
+
+    std::cout << "LEDs on!\n";
+
+    // Keep them on for 5 seconds
+    sleep(5);
+
+    // Turn them off
+    digitalWrite(RED_PIN, LOW);
+    digitalWrite(GREEN_PIN, LOW);
+    digitalWrite(BLUE_PIN, LOW);
+
+    std::cout << "LEDs off.\n";
+    return 0;
+}
+
+/*
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -183,3 +224,4 @@ int main() {
     std::cout << "Exiting...\n";
     return 0;
 }
+*/
