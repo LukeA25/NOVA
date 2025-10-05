@@ -13,7 +13,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
 #ifndef __APPLE__
   #include <gpiod.h>
 #endif
@@ -24,8 +23,8 @@ using namespace std::chrono_literals;
 namespace cfg {
     // -------- Wi-Fi / UDP --------
     inline const char* kUdpTargetIp = "10.20.0.195";
-    constexpr uint16_t kUdpTxPort   = 5005; // Outgoing telemetry
-    constexpr uint16_t kUdpRxPort   = 5006; // Incoming control
+    constexpr uint16_t kUdpTxPort   = 5006; // Outgoing telemetry
+    constexpr uint16_t kUdpRxPort   = 5005; // Incoming control
 
     // -------- RGB "eyes" control --------
     constexpr int kEyeRedPin   = 12;
@@ -105,34 +104,44 @@ void wifi_rx_thread() {
         return;
     }
 
-    // Allow large enough buffer for small MP3s
-    std::vector<char> buffer(64 * 1024);  // 64 KB
+    std::string tmpPath = "/tmp/received.mp3";
+    std::vector<char> buffer(64 * 1024);
+
     while (!g_quit.load()) {
-        ssize_t n = recv(sock, buffer.data(), buffer.size(), 0);
-        if (n > 0) {
-            std::cout << "[WiFi] Received " << n << " bytes\n";
-
-            // Write to temp file
-            std::string tmpPath = "/tmp/received.mp3";
-            FILE* f = fopen(tmpPath.c_str(), "wb");
-            if (!f) {
-                perror("fopen");
-                continue;
-            }
-            fwrite(buffer.data(), 1, n, f);
-            fclose(f);
-
-            // Play it using mpg123
-            std::string cmd = "mpg123 -q " + tmpPath;
-            int ret = system(cmd.c_str());
-            if (ret != 0)
-                std::cerr << "Failed to play audio\n";
+        FILE* f = fopen(tmpPath.c_str(), "wb");
+        if (!f) {
+            perror("fopen");
+            break;
         }
+
+        while (!g_quit.load()) {
+            ssize_t n = recv(sock, buffer.data(), buffer.size(), 0);
+            if (n <= 0) continue;
+
+            // Check for END signal
+            if (n == 3 && std::string(buffer.data(), 3) == "END") {
+                std::cout << "[WiFi] Received END signal\n";
+                break;
+            }
+
+            std::cout << "[WiFi] Received " << n << " bytes\n";
+            fwrite(buffer.data(), 1, n, f);
+            fflush(f);
+        }
+
+        fclose(f);
+
+        // Phase 2: Play file
+        std::string cmd = "mpg123 -q " + tmpPath;
+        int ret = system(cmd.c_str());
+        if (ret != 0)
+            std::cerr << "Failed to play audio\n";
     }
 
     ::close(sock);
 }
 
+/*
 void gpio_thread() {
 #ifndef __APPLE__
     gpiod_chip* chip = gpiod_chip_open(cfg::kGpioChip);
@@ -163,6 +172,7 @@ void gpio_thread() {
     gpiod_chip_close(chip);
 #endif
 }
+*/
 
 // ------------------- Consumer -------------------
 
@@ -171,7 +181,7 @@ int main() {
 
     std::thread(wifi_tx_thread).detach();
     std::thread(wifi_rx_thread).detach();
-    std::thread(gpio_thread).detach();
+    // std::thread(gpio_thread).detach();
 
     while (!g_quit.load()) {
         Event ev;
