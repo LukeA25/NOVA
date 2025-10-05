@@ -79,7 +79,7 @@ typedef enum {
 
 typedef struct {
     float      target_deg;
-    float      time_to_complete_ms;
+    uint16_t   time_to_complete_ms;
     EaseMode_t ease;
 } ServoTarget_t;
 
@@ -87,13 +87,13 @@ typedef struct { float yaw, pitch, roll; } Euler3f;
 
 typedef struct {
     Euler3f    omega;
-    float      time_to_complete_ms;
+    uint16_t   time_to_complete_ms;
 } HeadTarget_t;
 
 typedef struct {
     HeadTarget_t  head;
     ServoTarget_t servos[3];
-    float         time_to_complete_ms;
+    uint16_t      time_to_complete_ms;
 } FullCommandFrame_t;
 
 #pragma pack(pop)
@@ -583,7 +583,7 @@ int main() {
 
         idle_cmd.time_to_complete_ms = 500;
 
-        uart_queue.enqueue(idle_cmd);
+        uart_queue.push(idle_cmd);
     };
 
     auto do_visual_scan = []{
