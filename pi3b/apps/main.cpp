@@ -220,6 +220,10 @@ std::mutex g_q_m;
 std::condition_variable g_q_cv;
 std::queue<Event> g_q;
 
+std::queue<FullCommandFrame_t> uart_queue;
+std::mutex uart_q_m;
+std::condition_variable uart_q_cv;
+
 std::atomic<bool>  g_quit{false};
 
 static void push(Event e) {
@@ -406,6 +410,14 @@ void uart_thread() {
     if (fd < 0) return;
 
     while (!g_quit.load()) {
+        FullCommandFrame_t cmd;
+        {
+            std::unique_lock<std::mutex> lk(uart_q_m);
+            uart_q_cv.wait(lk, []{ return !uart_queue.empty(); });
+            cmd = uart_queue.front();
+            uart_queue.pop();
+        }
+
         uint8_t buffer[31];
         buffer[0] = 0xAB;
         buffer[1] = 0xCD;
@@ -563,9 +575,11 @@ int main() {
         idle_cmd.head.omega.yaw   = 0.0f;
         idle_cmd.head.time_to_complete_ms = 500;
 
-        idle_cmd.servos[0] = { .target_deg = 90, .time_to_complete_ms = 500, .ease = 1 };
-        idle_cmd.servos[1] = { .target_deg = 110, .time_to_complete_ms = 500, .ease = 1 };
-        idle_cmd.servos[2] = { .target_deg = 70, .time_to_complete_ms = 500, .ease = 1 };
+        for (int i = 0; i < 3; i++) {
+            idle_cmd.servos[i].target_deg = 110;
+            idle_cmd.servos[i].time_to_complete_ms = 500;
+            idle_cmd.servos[i].ease = EASE_IN;
+        }
 
         idle_cmd.time_to_complete_ms = 500;
 
