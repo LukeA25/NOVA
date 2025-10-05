@@ -1,44 +1,3 @@
-#include <wiringPi.h>
-#include <iostream>
-#include <unistd.h> // for sleep
-
-// BCM GPIOs
-#define RED_PIN    12
-#define GREEN_PIN  13
-#define BLUE_PIN    6
-
-int main() {
-    // Initialize wiringPi with BCM GPIO numbering
-    if (wiringPiSetupGpio() == -1) {
-        std::cerr << "Failed to initialize wiringPi\n";
-        return 1;
-    }
-
-    // Set pin modes
-    pinMode(RED_PIN, OUTPUT);
-    pinMode(GREEN_PIN, OUTPUT);
-    pinMode(BLUE_PIN, OUTPUT);
-
-    // Turn on all LEDs
-    digitalWrite(RED_PIN, HIGH);
-    digitalWrite(GREEN_PIN, HIGH);
-    digitalWrite(BLUE_PIN, HIGH);
-
-    std::cout << "LEDs on!\n";
-
-    // Keep them on for 5 seconds
-    sleep(5);
-
-    // Turn them off
-    digitalWrite(RED_PIN, LOW);
-    digitalWrite(GREEN_PIN, LOW);
-    digitalWrite(BLUE_PIN, LOW);
-
-    std::cout << "LEDs off.\n";
-    return 0;
-}
-
-/*
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -64,15 +23,9 @@ using namespace std::chrono_literals;
 // ----------------------- Config -----------------------
 namespace cfg {
     // -------- Wi-Fi / UDP --------
-    inline const char* kUdpTargetIp = "192.168.1.42"; // <-- Pi 3B IP
+    inline const char* kUdpTargetIp = "10.20.0.195";
     constexpr uint16_t kUdpTxPort   = 5005; // Outgoing telemetry
     constexpr uint16_t kUdpRxPort   = 5006; // Incoming control
-
-    // -------- Audio DAC control --------
-    constexpr int kDacLrckPin   = 2;
-    constexpr int kDacBclkPin   = 3;
-    constexpr int kDacDataPin   = 4;
-    constexpr int kDacEnablePin = 14;
 
     // -------- RGB "eyes" control --------
     constexpr int kEyeRedPin   = 12;
@@ -88,18 +41,17 @@ namespace cfg {
     constexpr int kEnc3B = 27;
 
     // -------- Fuel gauge (MAX17043) status pins --------
-    constexpr int kFuelGaugeAlertPin = 11;
+    constexpr int kFuelGaugeAlertPin = 17;
     constexpr int kFuelGaugeSdaPin   = 0;
     constexpr int kFuelGaugeSclPin   = 1;
 
     // -------- Charger pins --------
     inline const char* kGpioChip    = "/dev/gpiochip0";
-    constexpr int kChargePin        = 17;
-    constexpr int kChargedPin       = 27;
+    constexpr int kChargePin        = 8;
+    constexpr int kChargedPin       = 25;
 }
 // ------------------------------------------------------
 
-// Minimal event bus / state machine
 enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped };
 struct Event { Ev id; };
 
@@ -153,12 +105,28 @@ void wifi_rx_thread() {
         return;
     }
 
-    char buf[512];
+    // Allow large enough buffer for small MP3s
+    std::vector<char> buffer(64 * 1024);  // 64 KB
     while (!g_quit.load()) {
-        ssize_t n = recv(sock, buf, sizeof(buf), 0);
+        ssize_t n = recv(sock, buffer.data(), buffer.size(), 0);
         if (n > 0) {
-            // TODO: Parse buf into commands
-            // push(Event{Ev::IdleTick});
+            std::cout << "[WiFi] Received " << n << " bytes\n";
+
+            // Write to temp file
+            std::string tmpPath = "/tmp/received.mp3";
+            FILE* f = fopen(tmpPath.c_str(), "wb");
+            if (!f) {
+                perror("fopen");
+                continue;
+            }
+            fwrite(buffer.data(), 1, n, f);
+            fclose(f);
+
+            // Play it using mpg123
+            std::string cmd = "mpg123 -q " + tmpPath;
+            int ret = system(cmd.c_str());
+            if (ret != 0)
+                std::cerr << "Failed to play audio\n";
         }
     }
 
@@ -224,4 +192,3 @@ int main() {
     std::cout << "Exiting...\n";
     return 0;
 }
-*/

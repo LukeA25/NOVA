@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Luke Anderson – MIT License
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -8,6 +10,7 @@
 #include <cstring>
 #include <thread>
 #include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <cmath>
 #include <termios.h>
@@ -53,8 +56,8 @@ namespace cfg {
     inline const char* kUartDev      = "/dev/serial0";
     constexpr speed_t  kUartBaud     = B115200;
 
-// Wi-Fi / UDP
-    inline const char* kUdpTargetIp = "192.168.1.42"; // <-- set to Zero 2 W IP
+    // Wi-Fi / UDP
+    inline const char* kUdpTargetIp = "10.20.0.178"; // <-- set to Zero 2 W IP
     constexpr uint16_t kUdpTxPort     = 5005; // Outgoing telemetry
     constexpr uint16_t kUdpRxPort   = 5006; // Incoming control
 
@@ -62,10 +65,11 @@ namespace cfg {
     constexpr auto kIdleTickPeriod   = 30s;
     constexpr auto kScanTickPeriod   = 5min;
 }
+// ------------------------------------------------------
 
+// ----------------------- Pico UART Structs -----------------------
 #pragma pack(push,1)
 
-// replicate EaseMode_t
 typedef enum {
     EASE_NONE,
     EASE_IN,
@@ -73,32 +77,29 @@ typedef enum {
     EASE_IN_OUT,
 } EaseMode_t;
 
-// replicate ServoTarget_t
 typedef struct {
     float      target_deg;
     float      time_to_complete_ms;
     EaseMode_t ease;
 } ServoTarget_t;
 
-// replicate Euler3f
 typedef struct { float yaw, pitch, roll; } Euler3f;
 
-// replicate HeadTarget_t
 typedef struct {
     Euler3f    omega;
     float      time_to_complete_ms;
 } HeadTarget_t;
 
-// replicate FullCommand_t (head + 3 servos)
 typedef struct {
-    HeadTarget_t head;
+    HeadTarget_t  head;
     ServoTarget_t servos[3];
-} FullCommand_t;
+    float         time_to_complete_ms;
+} FullCommandFrame_t;
 
 #pragma pack(pop)
-
 // ------------------------------------------------------
 
+// ----------------------- Audio Helper Functions -----------------------
 struct DcFilter {
     float prev_in = 0.0f;
     float prev_out = 0.0f;
@@ -113,10 +114,36 @@ struct DcFilter {
     }
 };
 
-void save_clip(const std::vector<int16_t>& samples, const std::string& path) {
+struct SpeechGate {
+    int voice_count = 0;
+    int silence_count = 0;
+    bool speech_active = false;
+
+    static constexpr int kOnFrames  = 5;   // need 5 voiced frames (~50 ms) to activate
+    static constexpr int kOffFrames = 50;  // need 20 silent frames (~200 ms) to deactivate
+
+    bool update(int vad_result) {
+        if (vad_result == 1) {
+            voice_count++;
+            silence_count = 0;
+            if (!speech_active && voice_count >= kOnFrames) {
+                speech_active = true;
+            }
+        } else {
+            silence_count++;
+            voice_count = 0;
+            if (speech_active && silence_count >= kOffFrames) {
+                speech_active = false;
+            }
+        }
+        return speech_active;
+    }
+};
+
+void save_clip(const std::vector<int16_t>& samples, const std::string& path, int rate = 48000, int channels = 1) {
     SF_INFO sfinfo{};
-    sfinfo.samplerate = 16000;
-    sfinfo.channels = 1;
+    sfinfo.samplerate = rate;
+    sfinfo.channels = channels;
     sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
 
     SNDFILE* sndfile = sf_open(path.c_str(), SFM_WRITE, &sfinfo);
@@ -136,7 +163,7 @@ void save_clip(const std::vector<int16_t>& samples, const std::string& path) {
 
 void upload_clip(const std::vector<int16_t>& samples) {
     const char* input_filename = "wake_clip.wav";
-    const char* output_filename = "response_clip.wav";
+    const char* output_filename = "response_clip.mp3";
 
     // Save the input audio file
     save_clip(samples, input_filename);
@@ -182,8 +209,9 @@ void upload_clip(const std::vector<int16_t>& samples) {
     curl_mime_free(form);
     curl_easy_cleanup(curl);
 }
+// ------------------------------------------------------
 
-// Minimal event bus / state machine
+// ------------------- State Machine Setup -------------------
 enum class State { CHARGING, IDLE, LISTENING, SPEAKING };
 enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped };
 struct Event { Ev id; };
@@ -201,9 +229,9 @@ static void push(Event e) {
 }
 
 static void on_sigint(int){ g_quit.store(true); }
+// ------------------------------------------------------
 
 // ------------------- Producers -------------------
-
 void idle_timer() {
     while (!g_quit.load()) { std::this_thread::sleep_for(cfg::kIdleTickPeriod); push({Ev::IdleTick}); }
 }
@@ -212,60 +240,9 @@ void scan_timer() {
     while (!g_quit.load()) { std::this_thread::sleep_for(cfg::kScanTickPeriod); push({Ev::ScanTick}); }
 }
 
-bool write_wav_file(const std::string& path, const std::vector<int16_t>& data, int channels, int sample_rate) {
-    SF_INFO sfinfo;
-    sfinfo.frames = data.size() / channels;
-    sfinfo.samplerate = sample_rate;
-    sfinfo.channels = channels;
-    sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
-
-    SNDFILE* outfile = sf_open(path.c_str(), SFM_WRITE, &sfinfo);
-    if (!outfile) {
-        std::cerr << "Failed to open output file: " << sf_strerror(nullptr) << std::endl;
-        return false;
-    }
-
-    sf_count_t written = sf_write_short(outfile, data.data(), data.size());
-    if (written != static_cast<sf_count_t>(data.size())) {
-        std::cerr << "Failed to write all samples: wrote " << written << "/" << data.size() << std::endl;
-        sf_close(outfile);
-        return false;
-    }
-
-    sf_close(outfile);
-    return true;
-}
-
-struct SpeechGate {
-    int voice_count = 0;
-    int silence_count = 0;
-    bool speech_active = false;
-
-    // parameters you can tune
-    static constexpr int kOnFrames  = 5;   // need 5 voiced frames (~50 ms) to activate
-    static constexpr int kOffFrames = 50;  // need 20 silent frames (~200 ms) to deactivate
-
-    bool update(int vad_result) {
-        if (vad_result == 1) {
-            voice_count++;
-            silence_count = 0;
-            if (!speech_active && voice_count >= kOnFrames) {
-                speech_active = true;
-            }
-        } else {
-            silence_count++;
-            voice_count = 0;
-            if (speech_active && silence_count >= kOffFrames) {
-                speech_active = false;
-            }
-        }
-        return speech_active;
-    }
-};
-
 void audio_doa_thread() {
     SpeechGate gate;
-    std::deque<int16_t> prebuffer;   // ~1 sec of audio
+    std::deque<int16_t> prebuffer;
     bool recording = false;
     bool wake_detected = false;
     SpeexResamplerState *resampler = nullptr;
@@ -307,7 +284,7 @@ void audio_doa_thread() {
             return;
         }
 
-        // === Buffers ===
+        // --- Buffers ---
         std::vector<int32_t> buf(cfg::kPeriodFrames * cfg::kChannels);
         std::vector<int16_t> mono;
         mono.reserve(cfg::kPeriodFrames);
@@ -324,7 +301,6 @@ void audio_doa_thread() {
             const size_t got = alsa.read(buf);
             if (got == 0) continue;
 
-            // Stereo → mono + DC remove + gain
             mono.resize(got);
             for (size_t i = 0; i < mono.size(); i++) {
                 int32_t left = buf[2 * i];
@@ -344,19 +320,20 @@ void audio_doa_thread() {
                 if (frame480.size() == 480) {
                     // --- VAD ---
                     int vad_result = WebRtcVad_Process(vad, cfg::kRate,
-                                                       frame480.data(), frame480.size());
+                                                       frame480.data(),
+                                                       frame480.size());
                     bool speech_detected = gate.update(vad_result);
 
                     std::vector<int16_t> downsampled_16k(160);
                     spx_uint32_t in_len = 480;
                     spx_uint32_t out_len = 160;
                     speex_resampler_process_int(resampler, 0,
-                                        frame480.data(), &in_len,
-                                        downsampled_16k.data(), &out_len);
+                                                frame480.data(), &in_len,
+                                                downsampled_16k.data(), &out_len);
 
                     porcupine_frame.insert(porcupine_frame.end(),
-                                  downsampled_16k.begin(),
-                                  downsampled_16k.begin() + out_len);
+                                           downsampled_16k.begin(),
+                                           downsampled_16k.begin() + out_len);
 
                     // Process complete frames
                     while (porcupine_frame.size() >= 512) {
@@ -369,17 +346,14 @@ void audio_doa_thread() {
                             clip_buffer.clear();
                         }
 
-                        // Remove processed samples
                         porcupine_frame.erase(porcupine_frame.begin(),
-                                 porcupine_frame.begin() + 512);
+                        porcupine_frame.begin() + 512);
                     }
 
-                    // --- If recording, store the raw frames ---
                     if (recording) {
                         clip_buffer.insert(clip_buffer.end(), frame480.begin(), frame480.end());
                     }
 
-                    // --- End of recording condition ---
                     if (!speech_detected && recording) {
                         std::cout << "Speech ended, saving clip..." << std::endl;
                         save_clip(clip_buffer, "voice_clip.wav");
@@ -432,27 +406,6 @@ void uart_thread() {
     if (fd < 0) return;
 
     while (!g_quit.load()) {
-        FullCommand_t cmd{};
-        // Head target
-        cmd.head.omega.yaw   = 90.0f;
-        cmd.head.omega.pitch = 0.0f;
-        cmd.head.omega.roll  = 0.0f;
-        cmd.head.time_to_complete_ms = 1000.0f;
-
-        // Servos
-        cmd.servos[0].target_deg = 90.0f;
-        cmd.servos[0].time_to_complete_ms = 1000.0f;
-        cmd.servos[0].ease = EASE_NONE;
-
-        cmd.servos[1].target_deg = 45.0f;
-        cmd.servos[1].time_to_complete_ms = 1000.0f;
-        cmd.servos[1].ease = EASE_NONE;
-
-        cmd.servos[2].target_deg = 120.0f;
-        cmd.servos[2].time_to_complete_ms = 1000.0f;
-        cmd.servos[2].ease = EASE_NONE;
-
-        // send the whole struct
         uint8_t buffer[31];
         buffer[0] = 0xAB;
         buffer[1] = 0xCD;
@@ -492,18 +445,59 @@ void uart_thread() {
 
 void wifi_tx_thread() {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) { perror("socket"); return; }
+    if (sock < 0) {
+        perror("socket");
+        return;
+    }
 
-    timeval tv{.tv_sec = 0, .tv_usec = 20000};
+    timeval tv{.tv_sec = 0, .tv_usec = 20000}; // 20ms timeout
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     sockaddr_in dst{};
     dst.sin_family = AF_INET;
-    dst.sin_port   = htons(cfg::kUdpTxPort);
+    dst.sin_port = htons(cfg::kUdpTxPort);
     dst.sin_addr.s_addr = inet_addr(cfg::kUdpTargetIp);
 
+    const std::string filepath = "response_clip.mp3";
+    const size_t kMaxChunkSize = 1024;
+
     while (!g_quit.load()) {
+        if (std::ifstream test(filepath); !test.good()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        std::ifstream file(filepath, std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "[wifi_tx] Failed to open file: " << filepath << "\n";
+            break;
+        }
+
+        std::cout << "[wifi_tx] Sending file: " << filepath << "\n";
+
+        std::vector<char> buffer(kMaxChunkSize);
+        while (!file.eof()) {
+            file.read(buffer.data(), buffer.size());
+            std::streamsize bytes_read = file.gcount();
+
+            if (bytes_read > 0) {
+                ssize_t sent = sendto(sock, buffer.data(), bytes_read, 0,
+                                      (sockaddr*)&dst, sizeof(dst));
+                if (sent < 0) {
+                    perror("[wifi_tx] sendto");
+                    break;
+                }
+            }
+        }
+
+        file.close();
+        std::cout << "[wifi_tx] File sent successfully.\n";
+
+        std::remove(filepath.c_str());
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
+
     ::close(sock);
 }
 
@@ -547,8 +541,7 @@ void wifi_rx_thread() {
     ::close(sock);
 }
 
-// ------------------- Consumer (state machine) -------------------
-
+// ------------------- Consumer (State Machine) -------------------
 int main() {
     std::signal(SIGINT, on_sigint);
 
@@ -556,14 +549,27 @@ int main() {
     std::thread(scan_timer).detach();
     std::thread(audio_doa_thread).detach();
     std::thread(uart_thread).detach();
-std::thread(wifi_tx_thread).detach();
-std::thread(wifi_rx_thread).detach();
+    std::thread(wifi_tx_thread).detach();
+    std::thread(wifi_rx_thread).detach();
 
     State state = State::IDLE;
 
     auto do_idle_animation = []{
-        // TODO: trigger a short, non-blocking idle animation (motors/LEDs)
         std::cout << "[idle] animation\n";
+        FullCommandFrame_t idle_cmd;
+
+        idle_cmd.head.omega.pitch = 0.0f;
+        idle_cmd.head.omega.roll  = 0.0f;
+        idle_cmd.head.omega.yaw   = 0.0f;
+        idle_cmd.head.time_to_complete_ms = 500;
+
+        idle_cmd.servos[0] = { .target_deg = 90, .time_to_complete_ms = 500, .ease = 1 };
+        idle_cmd.servos[1] = { .target_deg = 110, .time_to_complete_ms = 500, .ease = 1 };
+        idle_cmd.servos[2] = { .target_deg = 70, .time_to_complete_ms = 500, .ease = 1 };
+
+        idle_cmd.time_to_complete_ms = 500;
+
+        uart_queue.enqueue(idle_cmd);
     };
 
     auto do_visual_scan = []{
@@ -585,46 +591,42 @@ std::thread(wifi_rx_thread).detach();
         }
 
         switch (state) {
-case State::CHARGING:
-if (ev.id == Ev::ChargeStopped) {
-state = State::IDLE;
-std::cout << "[state] -> IDLE (charge stopped)\n";
-}
-break;
+        case State::CHARGING:
+            if (ev.id == Ev::ChargeStopped) {
+                state = State::IDLE;
+                std::cout << "[state] -> IDLE (charge stopped)\n";
+            }
+            break;
 
-case State::IDLE:
-if (ev.id == Ev::ChargeStarted) {
-state = State::CHARGING;
-std::cout << "[state] -> CHARGING\n";
-break;
-}
-// existing IdleTick / ScanTick / WakeWord handling…
-// ...
-break;
+        case State::IDLE:
+            if (ev.id == Ev::ChargeStarted) {
+                state = State::CHARGING;
+                std::cout << "[state] -> CHARGING\n";
+                break;
+            }
+            break;
 
-case State::LISTENING:
-if (ev.id == Ev::ChargeStarted) {
-state = State::CHARGING;
-std::cout << "[state] -> CHARGING\n";
-break;
-}
-// existing listening handling…
-break;
+        case State::LISTENING:
+            if (ev.id == Ev::ChargeStarted) {
+                state = State::CHARGING;
+                std::cout << "[state] -> CHARGING\n";
+                break;
+            }
+            break;
 
-case State::SPEAKING:
-if (ev.id == Ev::ChargeStarted) {
-state = State::CHARGING;
-std::cout << "[state] -> CHARGING\n";
-break;
-}
-if (ev.id == Ev::TtsFinished) {
-state = State::IDLE;
-}
-break;
-}
+        case State::SPEAKING:
+            if (ev.id == Ev::ChargeStarted) {
+                state = State::CHARGING;
+                std::cout << "[state] -> CHARGING\n";
+                break;
+            }
+            if (ev.id == Ev::TtsFinished) {
+                state = State::IDLE;
+            }
+            break;
+        }
     }
 
     std::cout << "Exiting...\n";
     return 0;
 }
-
