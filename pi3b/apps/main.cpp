@@ -371,7 +371,12 @@ static void push(Event e) {
     g_q_cv.notify_one();
 }
 
-static void on_sigint(int){ g_quit.store(true); }
+static void on_sigint(int) { 
+    g_quit.store(true);
+    g_q_cv.notify_all();
+    uart_q_cv.notify_all();
+    audio_cv.notify_all();
+}
 // ------------------------------------------------------
 // ------------------- Producers -------------------
 void audio_doa_thread() {
@@ -796,7 +801,7 @@ int main() {
             } else if (ev.id == Ev::WakeWord) {
                 {
                     std::lock_guard<std::mutex> lk(uart_q_m);
-                    uart_queue.push(listen_pose);
+                    uart_queue.push(listen_pose.frames[0]);
                 }
                 uart_q_cv.notify_one();
 
