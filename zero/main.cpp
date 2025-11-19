@@ -1,3 +1,5 @@
+// Copyright (c) 2025 Luke Anderson – MIT License
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -13,9 +15,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#ifndef __APPLE__
-  #include <gpiod.h>
-#endif
+#include <gpiod.h>
 
 using namespace std::chrono_literals;
 
@@ -51,8 +51,17 @@ namespace cfg {
 }
 // ------------------------------------------------------
 
-enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped };
+// ------------------- State Machine Setup -------------------
+enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped, Charged };
 struct Event { Ev id; };
+
+enum class LedMode {
+    Idle,        // Solid blue with occasional blink
+    Charging,    // Blink orange
+    Charged,     // Solid green
+    Speaking     // Rapid blink blue
+};
+std::atomic<LedMode> g_led_mode{LedMode::Idle};
 
 std::mutex g_q_m;
 std::condition_variable g_q_cv;
@@ -65,27 +74,38 @@ static void push(Event e) {
     g_q.push(e);
     g_q_cv.notify_one();
 }
-static void on_sigint(int){ g_quit.store(true); }
+static void on_sigint(int) {
+    g_quit.store(true);
+    g_q_cv.notify_all();
+}
+// ------------------------------------------------------
 
-// ------------------- Producers -------------------
-
-void wifi_tx_thread() {
+// ------------------- WiFi TX Function -------------------
+void send_udp_msg(const char* msg) {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) { perror("socket"); return; }
+    if (sock < 0) {
+        perror("[wifi_tx] socket");
+        return;
+    }
 
     sockaddr_in dst{};
     dst.sin_family = AF_INET;
     dst.sin_port   = htons(cfg::kUdpTxPort);
     dst.sin_addr.s_addr = inet_addr(cfg::kUdpTargetIp);
 
-    while (!g_quit.load()) {
-        // TODO: Package encoder data and send with sendto()
-        std::this_thread::sleep_for(20ms);
+    ssize_t sent = sendto(sock, msg, strlen(msg), 0,
+                          (sockaddr*)&dst, sizeof(dst));
+    if (sent < 0) {
+        perror("[wifi_tx] sendto");
+    } else {
+        std::cout << "[wifi_tx] Sent: " << msg << "\n";
     }
 
     ::close(sock);
 }
+// ------------------------------------------------------
 
+// ------------------- Producers -------------------
 void wifi_rx_thread() {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) { perror("socket"); return; }
@@ -121,8 +141,7 @@ void wifi_rx_thread() {
             // Check for END signal
             if (n == 3 && std::string(buffer.data(), 3) == "END") {
                 std::cout << "[WiFi] Received END signal\n";
-                break;
-            }
+                break; }
 
             std::cout << "[WiFi] Received " << n << " bytes\n";
             fwrite(buffer.data(), 1, n, f);
@@ -132,56 +151,115 @@ void wifi_rx_thread() {
         fclose(f);
 
         // Phase 2: Play file
-        std::string cmd = "mpg123 -q " + tmpPath;
+        push(Event{Ev::TtsStarted});
+        std::string cmd = "mpg123 -q " + tmpPath; // -f 65536 
         int ret = system(cmd.c_str());
-        if (ret != 0)
-            std::cerr << "Failed to play audio\n";
+        if (ret != 0) std::cerr << "Failed to play audio\n";
+        push(Event{Ev::TtsFinished});
     }
 
     ::close(sock);
 }
 
-/*
 void gpio_thread() {
-#ifndef __APPLE__
     gpiod_chip* chip = gpiod_chip_open(cfg::kGpioChip);
-    if (!chip) { perror("gpiod_chip_open"); return; }
+    if (!chip) {
+        perror("gpiod_chip_open");
+        return;
+    }
 
-    gpiod_line* charge_line  = gpiod_chip_get_line(chip, cfg::kChargePin);
-    gpiod_line* charged_line = gpiod_chip_get_line(chip, cfg::kChargedPin);
+    gpiod_line* charge = gpiod_chip_get_line(chip, cfg::kChargePin);
+    if (!charge) {
+        perror("gpiod_chip_get_line (charge)");
+        gpiod_chip_close(chip);
+        return;
+    }
 
-    gpiod_line_request_config config{ "nova-gpio", GPIOD_LINE_REQUEST_EVENT_BOTH_EDGES, 0 };
-    gpiod_line_request(charge_line,  &config, 0);
-    gpiod_line_request(charged_line, &config, 0);
+    if (gpiod_line_request_input(charge, "charge") < 0) {
+        perror("gpiod_line_request_input");
+        gpiod_chip_close(chip);
+        return;
+    }
+
+    bool prev_is_charging = false;
 
     while (!g_quit.load()) {
-        gpiod_line_event ev;
-        if (gpiod_line_event_wait(charge_line, nullptr) > 0 &&
-            gpiod_line_event_read(charge_line, &ev) == 0) {
-            if (ev.event_type == GPIOD_LINE_EVENT_RISING_EDGE)
-                push(Event{Ev::ChargeStarted});
-            else
-                push(Event{Ev::ChargeStopped});
+        int value = gpiod_line_get_value(charge);
+        if (value < 0) {
+            perror("gpiod_line_get_value");
+            break;
         }
-        if (gpiod_line_event_wait(charged_line, nullptr) > 0 &&
-            gpiod_line_event_read(charged_line, &ev) == 0) {
-            // TODO: Maybe push a “charged” event here
+
+        bool is_charging = (value == 0);
+        if (is_charging != prev_is_charging) {
+            prev_is_charging = is_charging;
+            push(Event{is_charging ? Ev::ChargeStarted : Ev::ChargeStopped});
+
+            g_led_mode = is_charging ? LedMode::Charging : LedMode::Idle;
+            std::cout << "[GPIO] Charging: " << (is_charging ? "YES" : "NO") << "\n";
         }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     gpiod_chip_close(chip);
-#endif
 }
-*/
+
+void led_thread() {
+    gpiod_chip* chip = gpiod_chip_open(cfg::kGpioChip);
+    if (!chip) { perror("gpiod_chip_open"); return; }
+
+    auto open = [&](int pin) -> gpiod_line* {
+        gpiod_line* line = gpiod_chip_get_line(chip, pin);
+        gpiod_line_request_output(line, "led", 0);
+        return line;
+    };
+
+    gpiod_line* red   = open(cfg::kEyeRedPin);
+    gpiod_line* green = open(cfg::kEyeGreenPin);
+    gpiod_line* blue  = open(cfg::kEyeBluePin);
+
+    auto set_color = [&](bool r, bool g, bool b) {
+        gpiod_line_set_value(red, r);
+        gpiod_line_set_value(green, g);
+        gpiod_line_set_value(blue, b);
+    };
+
+    int tick = 0;
+    while (!g_quit.load()) {
+        LedMode mode = g_led_mode.load();
+
+        switch (mode) {
+            case LedMode::Idle:
+                set_color(0, 0, 1);
+                if (tick % 40 == 0 || 1) set_color(0, 0, 0);
+                break;
+            case LedMode::Charging:
+                set_color(0.5 * (tick % 10 < 5), 0.5 * (tick % 10 < 5), 0);
+                break;
+            case LedMode::Charged:
+                set_color(0, 1, 0);
+                break;
+            case LedMode::Speaking:
+                set_color(0, 0, (tick % 4 < 2));
+                break;
+        }
+
+        std::this_thread::sleep_for(100ms);
+        tick++;
+    }
+
+    gpiod_chip_close(chip);
+}
+// ------------------------------------------------------
 
 // ------------------- Consumer -------------------
-
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    std::thread(wifi_tx_thread).detach();
     std::thread(wifi_rx_thread).detach();
-    // std::thread(gpio_thread).detach();
+    std::thread(led_thread).detach();
+    std::thread(gpio_thread).detach();
 
     while (!g_quit.load()) {
         Event ev;
@@ -193,9 +271,28 @@ int main() {
         }
 
         switch (ev.id) {
-            case Ev::ChargeStarted: std::cout << "[GPIO] Charge started\n"; break;
-            case Ev::ChargeStopped: std::cout << "[GPIO] Charge stopped\n"; break;
-            default: break;
+            case Ev::ChargeStarted:
+                std::cout << "[GPIO] Charge started\n";
+                g_led_mode = LedMode::Charging;
+                send_udp_msg(R"({"type":"charge","state":"start"})");
+                break;
+            case Ev::ChargeStopped:
+                std::cout << "[GPIO] Charge stopped\n";
+                g_led_mode = LedMode::Idle;
+                send_udp_msg(R"({"type":"charge","state":"stop"})");
+                break;
+            case Ev::Charged:
+                std::cout << "[GPIO] Charge stopped\n";
+                g_led_mode = LedMode::Idle;
+                break;
+            case Ev::TtsStarted:
+                g_led_mode = LedMode::Speaking;
+                break;
+            case Ev::TtsFinished:
+                g_led_mode = LedMode::Idle;
+                break;
+            default:
+                break;
         }
     }
 
