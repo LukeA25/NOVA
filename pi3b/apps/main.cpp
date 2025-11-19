@@ -86,7 +86,7 @@ typedef struct {
 typedef struct { float yaw, pitch, roll; } Euler3f;
 
 typedef struct {
-    Euler3f    omega;
+    Euler3f    target_pos;
     uint16_t   time_to_complete_ms;
 } HeadTarget_t;
 
@@ -96,7 +96,133 @@ typedef struct {
     uint16_t      time_to_complete_ms;
 } FullCommandFrame_t;
 
+struct Animation {
+    std::vector<FullCommandFrame_t> frames;
+};
+
 #pragma pack(pop)
+// ------------------------------------------------------
+
+// ------------------- Animations -------------------
+static Animation listen_pose = {
+    .frames = {
+        {
+            .head = {{ .yaw = 0.0f, .pitch = 0.0f, .roll = 0.0f }, .time_to_complete_ms = 3000},
+            .servos = {
+                { .target_deg = 120.0f, .time_to_complete_ms = 3000, .ease = EASE_IN },
+                { .target_deg = 60.0f, .time_to_complete_ms = 3000, .ease = EASE_IN },
+                { .target_deg = 100.0f, .time_to_complete_ms = 3000, .ease = EASE_IN },
+            },
+            .time_to_complete_ms = 3000
+        },
+    } 
+};
+
+static Animation sleep_animation = {
+    .frames = {
+        {
+            .head = {{ .yaw = 0.0f, .pitch = 0.0f, .roll = 0.0f }, .time_to_complete_ms = 3000},
+            .servos = {
+                { .target_deg = 120.0f, .time_to_complete_ms = 3000, .ease = EASE_IN },
+                { .target_deg = 60.0f, .time_to_complete_ms = 3000, .ease = EASE_IN },
+                { .target_deg = 100.0f, .time_to_complete_ms = 3000, .ease = EASE_IN },
+            },
+            .time_to_complete_ms = 3000
+        },
+        {
+            .head = {{ .yaw = 0.0f, .pitch = 0.0f, .roll = 0.0f }, .time_to_complete_ms = 2000},
+            .servos = {
+                { .target_deg = 75.0f, .time_to_complete_ms = 2000, .ease = EASE_OUT },
+                { .target_deg = 60.0f, .time_to_complete_ms = 2000, .ease = EASE_OUT },
+                { .target_deg = 120.0f, .time_to_complete_ms = 2000, .ease = EASE_OUT },
+            },
+            .time_to_complete_ms = 2000
+        }
+    }
+};
+
+static Animation wake_animation = {
+    .frames = {
+        {
+            .head = {{ .yaw = 0.0f, .pitch = 0.0f, .roll = 0.0f }, .time_to_complete_ms = 500},
+            .servos = {
+                { .target_deg = 75.0f, .time_to_complete_ms = 500, .ease = EASE_IN },
+                { .target_deg = 60.0f, .time_to_complete_ms = 500, .ease = EASE_IN },
+                { .target_deg = 100.0f, .time_to_complete_ms = 500, .ease = EASE_IN },
+            },
+            .time_to_complete_ms = 500
+        },
+        {
+            .head = {{ .yaw = 0.0f, .pitch = 0.0f, .roll = 0.0f }, .time_to_complete_ms = 1000},
+            .servos = {
+                { .target_deg = 100.0f, .time_to_complete_ms = 1000, .ease = EASE_IN },
+                { .target_deg = 60.0f, .time_to_complete_ms = 1000, .ease = EASE_IN },
+                { .target_deg = 100.0f, .time_to_complete_ms = 1000, .ease = EASE_NONE },
+            },
+            .time_to_complete_ms = 1000
+        },
+        {
+            .head = {{ .yaw = 0.0f, .pitch = 0.0f, .roll = 0.0f }, .time_to_complete_ms = 3000},
+            .servos = {
+                { .target_deg = 135.0f, .time_to_complete_ms = 2000, .ease = EASE_OUT },
+                { .target_deg = 125.0f, .time_to_complete_ms = 2000, .ease = EASE_OUT },
+                { .target_deg = 50.0f, .time_to_complete_ms = 2000, .ease = EASE_OUT },
+            },
+            .time_to_complete_ms = 2000
+        }
+    }
+};
+
+static std::vector<Animation> idle_animations = {
+    // First Animation
+    {
+        {
+            // frames
+            {
+                .head = {{0.0f, 0.0f, 0.0f}, 1000},
+                .servos = {
+                    {90.0f, 1000, EASE_IN},
+                    {45.0f, 1000, EASE_OUT},
+                    {30.0f, 1000, EASE_IN_OUT}
+                },
+                .time_to_complete_ms = 1000
+            },
+            {
+                .head = {{5.0f, 0.0f, 0.0f}, 800},
+                .servos = {
+                    {100.0f, 800, EASE_OUT},
+                    {50.0f, 800, EASE_IN},
+                    {35.0f, 800, EASE_NONE}
+                },
+                .time_to_complete_ms = 800
+            }
+        }
+    },
+
+    // Second Animation
+    {
+        {
+            {
+                .head = {{-5.0f, 3.0f, 0.0f}, 1200},
+                .servos = {
+                    {70.0f, 1200, EASE_IN_OUT},
+                    {60.0f, 1200, EASE_IN},
+                    {40.0f, 1200, EASE_OUT}
+                },
+                .time_to_complete_ms = 1200
+            },
+            {
+                .head = {{0.0f, 0.0f, 0.0f}, 1000},
+                .servos = {
+                    {90.0f, 1000, EASE_NONE},
+                    {45.0f, 1000, EASE_NONE},
+                    {30.0f, 1000, EASE_NONE}
+                },
+                .time_to_complete_ms = 1000
+            }
+        }
+    }
+};
 // ------------------------------------------------------
 
 // ----------------------- Audio Helper Functions -----------------------
@@ -163,7 +289,8 @@ void save_clip(const std::vector<int16_t>& samples, const std::string& path, int
 
 void upload_clip(const std::vector<int16_t>& samples) {
     const char* input_filename = "wake_clip.wav";
-    const char* output_filename = "response_clip.mp3";
+    const char* output_filename = "response.mp3";
+    const char* output_final_filename = "response_clip.mp3";
 
     // Save the input audio file
     save_clip(samples, input_filename);
@@ -203,6 +330,12 @@ void upload_clip(const std::vector<int16_t>& samples) {
         std::cerr << "[upload_clip] curl error: " << curl_easy_strerror(res) << "\n";
     } else {
         std::cout << "[upload_clip] Upload and download successful. Response saved to: " << output_filename << "\n";
+
+        if (std::rename(output_filename, output_final_filename) != 0) {
+            std::cerr << "[upload_clip] Failed to rename file to " << output_final_filename << "\n";
+        } else {
+            std::cout << "[upload_clip] Renamed to: " << output_final_filename << "\n";
+        }
     }
 
     fclose(out);
@@ -216,15 +349,21 @@ enum class State { CHARGING, IDLE, LISTENING, SPEAKING };
 enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped };
 struct Event { Ev id; };
 
+static State state = State::IDLE;
+
 std::mutex g_q_m;
 std::condition_variable g_q_cv;
 std::queue<Event> g_q;
+
+std::atomic<bool>  g_quit{false};
 
 std::queue<FullCommandFrame_t> uart_queue;
 std::mutex uart_q_m;
 std::condition_variable uart_q_cv;
 
-std::atomic<bool>  g_quit{false};
+std::mutex audio_mtx;
+std::condition_variable audio_cv;
+std::atomic<bool> audio_active{true};
 
 static void push(Event e) {
     std::lock_guard<std::mutex> lk(g_q_m);
@@ -234,16 +373,7 @@ static void push(Event e) {
 
 static void on_sigint(int){ g_quit.store(true); }
 // ------------------------------------------------------
-
 // ------------------- Producers -------------------
-void idle_timer() {
-    while (!g_quit.load()) { std::this_thread::sleep_for(cfg::kIdleTickPeriod); push({Ev::IdleTick}); }
-}
-
-void scan_timer() {
-    while (!g_quit.load()) { std::this_thread::sleep_for(cfg::kScanTickPeriod); push({Ev::ScanTick}); }
-}
-
 void audio_doa_thread() {
     SpeechGate gate;
     std::deque<int16_t> prebuffer;
@@ -302,6 +432,11 @@ void audio_doa_thread() {
         std::vector<int16_t> clip_buffer;
 
         while (!g_quit.load()) {
+            std::unique_lock<std::mutex> lock(audio_mtx);
+            audio_cv.wait(lock, [] { return audio_active.load() || g_quit.load(); });
+            lock.unlock();
+            if (g_quit.load()) break;
+
             const size_t got = alsa.read(buf);
             if (got == 0) continue;
 
@@ -344,6 +479,7 @@ void audio_doa_thread() {
                         int keyword_index = porcupine.process_frame(porcupine_frame.data());
 
                         if (keyword_index >= 0) {
+                            push({Ev::WakeWord});
                             std::cout << "[Wake Word] Detected index " << keyword_index << std::endl;
                             wake_detected = true;
                             recording = true;
@@ -413,7 +549,8 @@ void uart_thread() {
         FullCommandFrame_t cmd;
         {
             std::unique_lock<std::mutex> lk(uart_q_m);
-            uart_q_cv.wait(lk, []{ return !uart_queue.empty(); });
+            uart_q_cv.wait(lk, []{ return !uart_queue.empty() || g_quit.load(); });
+            if (g_quit.load()) break;
             cmd = uart_queue.front();
             uart_queue.pop();
         }
@@ -422,9 +559,9 @@ void uart_thread() {
         buffer[0] = 0xAB;
         buffer[1] = 0xCD;
 
-        memcpy(&buffer[2],  &cmd.head.omega.pitch, 4);
-        memcpy(&buffer[6],  &cmd.head.omega.roll,  4);
-        memcpy(&buffer[10], &cmd.head.omega.yaw,   4);
+        memcpy(&buffer[2],  &cmd.head.target_pos.pitch, 4);
+        memcpy(&buffer[6],  &cmd.head.target_pos.roll,  4);
+        memcpy(&buffer[10], &cmd.head.target_pos.yaw,   4);
 
         buffer[14] = cmd.head.time_to_complete_ms & 0xFF;
         buffer[15] = (cmd.head.time_to_complete_ms >> 8) & 0xFF;
@@ -448,8 +585,6 @@ void uart_thread() {
         } else {
             std::cout << "[UART TX] Sent " << n << " bytes" << std::endl;
         }
-
-        std::this_thread::sleep_for(std::chrono::seconds(3));
     }
 
     ::close(fd);
@@ -507,6 +642,14 @@ void wifi_tx_thread() {
 
         std::remove(filepath.c_str());
 
+        const char* end_signal = "END";
+        ssize_t sent = sendto(sock, end_signal, 3, 0, (sockaddr*)&dst, sizeof(dst));
+        if (sent < 0) {
+            perror("[wifi_tx] Failed to send END signal");
+        } else {
+            std::cout << "[wifi_tx] Sent END signal\n";
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
@@ -553,54 +696,50 @@ void wifi_rx_thread() {
     ::close(sock);
 }
 
+void idle_animator_thread() {
+    using namespace std::chrono_literals;
+
+    while (g_quit.load() == false) {
+        if (state != State::IDLE) {
+            std::this_thread::sleep_for(100ms);
+            continue;
+        }
+
+        static size_t anim_index = 0;
+        Animation& anim = idle_animations[anim_index];
+
+        std::this_thread::sleep_for(10s + std::chrono::seconds(rand() % 20));
+
+        if (state != State::IDLE) continue;
+
+        for (auto& frame : anim.frames) {
+            if (state != State::IDLE) break;
+
+            uart_queue.push(frame);
+            std::this_thread::sleep_for(std::chrono::duration<float>(frame.time_to_complete_ms));
+        }
+
+        anim_index = (anim_index + 1) % idle_animations.size();
+    }
+}
+// ------------------------------------------------------
+
 // ------------------- Consumer (State Machine) -------------------
 int main() {
     std::signal(SIGINT, on_sigint);
 
-    std::thread(idle_timer).detach();
-    std::thread(scan_timer).detach();
     std::thread(audio_doa_thread).detach();
     std::thread(uart_thread).detach();
     std::thread(wifi_tx_thread).detach();
     std::thread(wifi_rx_thread).detach();
-
-    State state = State::IDLE;
-
-    auto do_idle_animation = []{
-        std::cout << "[idle] animation\n";
-        FullCommandFrame_t idle_cmd;
-
-        idle_cmd.head.omega.pitch = 0.0f;
-        idle_cmd.head.omega.roll  = 0.0f;
-        idle_cmd.head.omega.yaw   = 0.0f;
-        idle_cmd.head.time_to_complete_ms = 500;
-
-        for (int i = 0; i < 3; i++) {
-            idle_cmd.servos[i].target_deg = 110;
-            idle_cmd.servos[i].time_to_complete_ms = 500;
-            idle_cmd.servos[i].ease = EASE_IN;
-        }
-
-        idle_cmd.time_to_complete_ms = 500;
-
-        uart_queue.push(idle_cmd);
-    };
-
-    auto do_visual_scan = []{
-        // TODO: quick scan (e.g., camera sweep)
-        std::cout << "[idle] visual scan\n";
-    };
-
-    auto begin_listening = []{
-        // TODO: start VAD/ASR pipeline; on TTS request push Ev::TtsStarted/Ev::TtsFinished
-        std::cout << "[listening] start\n";
-    };
+    // std::thread(idle_animator_thread).detach();
 
     while (!g_quit.load()) {
         Event ev;
         {
             std::unique_lock<std::mutex> lk(g_q_m);
-            g_q_cv.wait(lk, []{ return !g_q.empty(); });
+            g_q_cv.wait(lk, []{ return !g_q.empty() || g_quit.load(); });
+            if (g_quit.load()) break;
             ev = g_q.front(); g_q.pop();
         }
 
@@ -608,14 +747,59 @@ int main() {
         case State::CHARGING:
             if (ev.id == Ev::ChargeStopped) {
                 state = State::IDLE;
+                {
+                    std::lock_guard<std::mutex> lock(audio_mtx);
+                    audio_active = true;
+                }
+                audio_cv.notify_one();
                 std::cout << "[state] -> IDLE (charge stopped)\n";
+
+                for (const FullCommandFrame_t& frame : wake_animation.frames) {
+                    {
+                        std::lock_guard<std::mutex> lk(uart_q_m);
+                        uart_queue.push(frame);
+                    }
+                    uart_q_cv.notify_one();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(frame.time_to_complete_ms));
+                }
+
+                {
+                    std::lock_guard<std::mutex> lk(uart_q_m);
+                    while (!uart_queue.empty()) uart_queue.pop();  // Clear queue ONCE
+                }
+
+                break;
             }
             break;
 
         case State::IDLE:
             if (ev.id == Ev::ChargeStarted) {
                 state = State::CHARGING;
+                audio_active = false;
                 std::cout << "[state] -> CHARGING\n";
+
+                for (const FullCommandFrame_t& frame : sleep_animation.frames) {
+                    {
+                        std::lock_guard<std::mutex> lk(uart_q_m);
+                        uart_queue.push(frame);
+                    }
+                    uart_q_cv.notify_one();
+
+                    std::this_thread::sleep_for(std::chrono::milliseconds(frame.time_to_complete_ms));
+                }
+
+                {
+                    std::lock_guard<std::mutex> lk(g_q_m);
+                    while (!g_q.empty()) g_q.pop();
+                }
+                break;
+            } else if (ev.id == Ev::WakeWord) {
+                {
+                    std::lock_guard<std::mutex> lk(uart_q_m);
+                    uart_queue.push(listen_pose);
+                }
+                uart_q_cv.notify_one();
+
                 break;
             }
             break;
