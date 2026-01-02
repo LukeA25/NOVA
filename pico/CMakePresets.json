@@ -18,6 +18,19 @@
         "PICO_TOOLCHAIN_PATH": "/Applications/ArmGNUToolchain/14.3.rel1/arm-none-eabi",
         "PICO_BOARD": "pico_w"
       }
+    },
+    {
+      "name": "pico",
+      "displayName": "Pico Build",
+      "description": "Build using Pico SDK and ARM GCC",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "PICO_SDK_PATH": "${sourceDir}/external/pico-sdk",
+        "PICO_TOOLCHAIN_PATH": "/Applications/ArmGNUToolchain/14.3.rel1/arm-none-eabi",
+        "PICO_BOARD": "pico"
+      }
     }
   ]
 }

@@ -36,7 +36,7 @@ target_include_directories(pico_app PRIVATE
 # Link Pico libs you use
 target_link_libraries(pico_app
     pico_stdlib
-    pico_cyw43_arch_none
+    hardware_exception
     hardware_pwm
 )
 

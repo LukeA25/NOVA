@@ -4,12 +4,11 @@
 #include "task.h"
 #include "timers.h"
 #include "semphr.h"
-#include <boards/pico_w.h>
+#include <boards/pico.h>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
 #include <hardware/uart.h>
 #include <pico/stdlib.h>
-#include <pico/cyw43_arch.h>
 #include <stdint.h>
 #include <stdio.h>
 
