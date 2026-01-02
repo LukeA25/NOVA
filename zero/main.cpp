@@ -52,7 +52,7 @@ namespace cfg {
 // ------------------------------------------------------
 
 // ------------------- State Machine Setup -------------------
-enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped, Charged };
+enum class Ev { IdleTick, ScanTick, WakeWord, TtsStarted, TtsFinished, ChargeStarted, ChargeStopped };
 struct Event { Ev id; };
 
 enum class LedMode {
@@ -169,37 +169,29 @@ void gpio_thread() {
     }
 
     gpiod_line* charge = gpiod_chip_get_line(chip, cfg::kChargePin);
-    if (!charge) {
-        perror("gpiod_chip_get_line (charge)");
-        gpiod_chip_close(chip);
-        return;
-    }
+    gpiod_line* charged_line = gpiod_chip_get_line(chip, cfg::kChargedPin);
 
-    if (gpiod_line_request_input(charge, "charge") < 0) {
-        perror("gpiod_line_request_input");
-        gpiod_chip_close(chip);
-        return;
-    }
-
-    bool prev_is_charging = false;
+    gpiod_line_request_config config{ "nova-gpio", GPIOD_LINE_REQUEST_EVENT_BOTH_EDGES, 0 };
+    gpiod_line_request(charge_line,  &config, 0);
+ 
+    gpiod_line_request_config config{ "nova-gpio", GPIOD_LINE_REQUEST_EVENT_BOTH_EDGES, 0 };
+    gpiod_line_request(charge_line,  &config, 0);
+    gpiod_line_request(charged_line, &config, 0);
 
     while (!g_quit.load()) {
-        int value = gpiod_line_get_value(charge);
-        if (value < 0) {
-            perror("gpiod_line_get_value");
-            break;
+        gpiod_line_event ev;
+-        if (gpiod_line_event_wait(charge_line, nullptr) > 0 &&
+-            gpiod_line_event_read(charge_line, &ev) == 0) {
+-            if (ev.event_type == GPIOD_LINE_EVENT_RISING_EDGE)
+-                push(Event{Ev::ChargeStarted});
+-            else
+-                push(Event{Ev::ChargeStopped});
         }
 
-        bool is_charging = (value == 0);
-        if (is_charging != prev_is_charging) {
-            prev_is_charging = is_charging;
-            push(Event{is_charging ? Ev::ChargeStarted : Ev::ChargeStopped});
-
-            g_led_mode = is_charging ? LedMode::Charging : LedMode::Idle;
-            std::cout << "[GPIO] Charging: " << (is_charging ? "YES" : "NO") << "\n";
+        if (gpiod_line_event_wait(charged_line, nullptr) > 0 &&
+            gpiod_line_event_read(charged_line, &ev) == 0) {
+            // TODO: Maybe push a “charged” event here
         }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     gpiod_chip_close(chip);
